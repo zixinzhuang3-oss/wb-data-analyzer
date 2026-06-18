@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "dev": "python3 -m http.server 5173",
+    "build": "node --check src/main.js && node --check src/utils/analysis.js && node --check src/utils/csv.js && node --check src/utils/excel.js && node --check src/utils/storage.js && node --check src/utils/fields.js && node --check src/utils/history.js && node --check src/utils/actions.js && node --check src/utils/effectAnalysis.js",
+    "preview": "python3 -m http.server 5173"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "type": "module"
+}
