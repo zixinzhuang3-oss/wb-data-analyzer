@@ -189,13 +189,11 @@ async function handleActionDelete(uniqueKey = getCurrentActionKey()) {
 }
 
 function actionFieldVisible(field, draft) {
-  if (['cpcSearchBid'].includes(field.key)) return draft.adMode === 'CPC';
-  if (field.key === 'cpmBidType') return draft.adMode === 'CPM';
-  if (field.key === 'cpmSearchBid') return draft.adMode === 'CPM' && draft.cpmBidType === '手动出价' && ['搜索', '搜索+推荐'].includes(draft.adPosition);
-  if (field.key === 'cpmRecommendBid') return draft.adMode === 'CPM' && draft.cpmBidType === '手动出价' && ['推荐', '搜索+推荐'].includes(draft.adPosition);
-  if (field.key === 'cpmUnifiedBid') return draft.adMode === 'CPM' && draft.cpmBidType === '统一出价';
-  if (field.key === 'dailyBudget') return ['CPC', 'CPM'].includes(draft.adMode);
-  if (field.key === 'adPosition') return ['CPC', 'CPM'].includes(draft.adMode);
+  if (['cpcSearchBid', 'cpcDailyBudget'].includes(field.key)) return draft.cpcEnabled === '开启';
+  if (['cpmPosition', 'cpmBidType', 'cpmDailyBudget'].includes(field.key)) return draft.cpmEnabled === '开启';
+  if (field.key === 'cpmSearchBid') return draft.cpmEnabled === '开启' && draft.cpmBidType === '手动出价' && ['仅搜索', '搜索+推荐'].includes(draft.cpmPosition);
+  if (field.key === 'cpmRecommendBid') return draft.cpmEnabled === '开启' && draft.cpmBidType === '手动出价' && ['仅推荐', '搜索+推荐'].includes(draft.cpmPosition);
+  if (field.key === 'cpmUnifiedBid') return draft.cpmEnabled === '开启' && draft.cpmBidType === '统一出价';
   return true;
 }
 
@@ -209,20 +207,21 @@ function renderActionField(field) {
   if (field.type === 'number') {
     return `<label class="form-field"><span>${field.label}</span><input data-action-field="${field.key}" type="number" step="0.01" value="${html(value)}" /></label>`;
   }
-  const disabled = field.key === 'adPosition' && draft.adMode === 'CPC' ? 'disabled' : '';
+  const disabled = field.disabled ? 'disabled' : '';
   return `<label class="form-field"><span>${field.label}</span><select data-action-field="${field.key}" ${disabled}><option value="">请选择</option>${field.options.map((option) => `<option value="${html(option)}" ${option === value ? 'selected' : ''}>${html(option)}</option>`).join('')}</select></label>`;
 }
 
 function renderActionModule(dates, skus) {
   const currentKey = getCurrentActionKey();
   const existing = actionMap().get(currentKey);
+  const groups = ['基础字段', 'CPC 模块', 'CPM 模块'].map((group) => `<fieldset class="action-fieldset"><legend>${group}</legend><div class="action-form-grid">${ACTION_FIELDS.filter((field) => field.group === group).map(renderActionField).join('')}</div></fieldset>`).join('');
   return `<section class="panel action-panel">
-    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录当天运营动作和广告策略调整；Excel B 列原文会保留，结构化动作以此表单为准。</p></div></div>
+    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。</p></div></div>
     <div class="action-form-grid">
       <label class="form-field"><span>日期</span><select id="action-date"><option value="">选择日期</option>${dates.map((date) => `<option value="${html(date)}" ${date === state.actionDraft.date ? 'selected' : ''}>${html(date)}</option>`).join('')}</select></label>
       <label class="form-field"><span>SKU</span><select id="action-sku"><option value="">选择 SKU</option>${skus.map((sku) => `<option value="${html(sku)}" ${sku === state.actionDraft.sku ? 'selected' : ''}>${html(sku)}</option>`).join('')}</select></label>
-      ${ACTION_FIELDS.map(renderActionField).join('')}
     </div>
+    ${groups}
     <div class="action-row form-actions">
       <button id="save-action" type="button">${existing ? '更新动作记录' : '保存动作记录'}</button>
       <button id="delete-action" type="button" ${existing ? '' : 'disabled'}>删除动作记录</button>
@@ -240,15 +239,17 @@ function renderSkuDetail(record, action) {
       <div><span>广告费</span><strong>${formatMoney(record.adSpend)}</strong></div>
       <div><span>销售额</span><strong>${formatMoney(record.revenue)}</strong></div>
       <div><span>利润</span><strong>${formatMoney(record.profit)}</strong></div>
-      <div><span>广告状态</span><strong>${html(action?.adStatus || record.adStatus || '-')}</strong></div>
-      <div><span>广告模式</span><strong>${html(action?.adMode || '-')}</strong></div>
-      <div><span>广告位置</span><strong>${html(action?.adPosition || '-')}</strong></div>
-      <div><span>出价方式</span><strong>${html(action?.cpmBidType || '-')}</strong></div>
-      <div><span>CPC搜索出价</span><strong>${html(action?.cpcSearchBid ?? '-')}</strong></div>
-      <div><span>CPM搜索出价</span><strong>${html(action?.cpmSearchBid ?? '-')}</strong></div>
-      <div><span>CPM推荐出价</span><strong>${html(action?.cpmRecommendBid ?? '-')}</strong></div>
-      <div><span>统一出价</span><strong>${html(action?.cpmUnifiedBid ?? '-')}</strong></div>
-      <div><span>每日预算</span><strong>${html(action?.dailyBudget ?? '-')}</strong></div>
+      <div><span>整体广告状态</span><strong>${html(action?.adStatus || record.adStatus || '-')}</strong></div>
+      <div><span>CPC 状态</span><strong>${html(action?.cpcEnabled || '-')}</strong></div>
+      <div><span>CPC 搜索出价</span><strong>${html(action?.cpcSearchBid ?? '-')}</strong></div>
+      <div><span>CPC 预算</span><strong>${html(action?.cpcDailyBudget ?? '-')}</strong></div>
+      <div><span>CPM 状态</span><strong>${html(action?.cpmEnabled || '-')}</strong></div>
+      <div><span>CPM 投放位置</span><strong>${html(action?.cpmPosition || '-')}</strong></div>
+      <div><span>CPM 出价方式</span><strong>${html(action?.cpmBidType || '-')}</strong></div>
+      <div><span>CPM 搜索出价</span><strong>${html(action?.cpmSearchBid ?? '-')}</strong></div>
+      <div><span>CPM 推荐出价</span><strong>${html(action?.cpmRecommendBid ?? '-')}</strong></div>
+      <div><span>CPM 统一出价</span><strong>${html(action?.cpmUnifiedBid ?? '-')}</strong></div>
+      <div><span>CPM 预算</span><strong>${html(action?.cpmDailyBudget ?? '-')}</strong></div>
     </div>
     <section class="detail-section"><h4>Excel 运营动作原文</h4><p>${html(record.operationAction || 'Excel 中未填写运营动作原文')}</p></section>
     <section class="detail-section"><h4>系统结构化动作</h4><p>${html(actionToSummary(action))}</p></section>
