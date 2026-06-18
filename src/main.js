@@ -3,7 +3,7 @@ import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup,
 import { filterRecords, getDateOptions, getSkuOptions, summarizeByDate, summarizeRecords } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatMoney, formatPercent } from './utils/analysis.js';
-import { ACTION_FIELDS, actionToSummary, createEmptyAction, normalizeAction } from './utils/actions.js';
+import { ACTION_FIELDS, actionToSummary, applyAdRules, createEmptyAction, normalizeAction } from './utils/actions.js';
 import { buildEffectAnalysis, metricLabels } from './utils/effectAnalysis.js';
 
 const root = document.getElementById('root');
@@ -22,7 +22,7 @@ const html = (value) => String(value ?? '').replace(/[&<>"]/g, (char) => ({ '&':
 const formatNumber = (value) => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(Number(value) || 0);
 
 const displayFields = [
-  'date', 'sku', 'linkId', 'operationAction', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders',
+  'date', 'sku', 'adStatus', 'linkId', 'operationAction', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders',
   'totalOrders', 'impressions', 'clicks', 'ctr', 'addToCart', 'conversionRate', 'organicImpressions', 'organicClicks',
   'organicOrders', 'adSpend', 'adOrders', 'adShare', 'adImpressions', 'adClicks', 'revenue', 'commission', 'russiaCost',
   'deliveryFee', 'acquiringFee', 'storageFee', 'remittanceFee', 'profit', 'keywordRank',
@@ -63,14 +63,16 @@ async function handleExcelUpload(file) {
     const result = await parseExcelWorkbook(file);
     if (!result.records.length) throw new Error('没有识别到有效 SKU sheet 或有效每日数据行。');
     await saveRecords(result.records);
+    if (result.actions?.length) await Promise.all(result.actions.map(saveAction));
     await refreshRecords();
     state.lastImport = {
       fileName: file.name,
       savedCount: result.records.length,
+      actionCount: result.actions?.length || 0,
       skuSheets: result.skuSheets,
       skippedSheets: result.skippedSheets,
     };
-    state.status = `导入完成：保存/覆盖 ${result.records.length} 行，识别 SKU sheet ${result.skuSheets.length} 个。`;
+    state.status = `导入完成：保存/覆盖 ${result.records.length} 行，自动识别动作 ${result.actions?.length || 0} 条，识别 SKU sheet ${result.skuSheets.length} 个。`;
   } catch (error) {
     state.status = `导入失败：${error.message || error}`;
   } finally {
@@ -108,10 +110,11 @@ const renderOptions = (options, current, placeholder) => [`<option value="">${pl
 
 function renderImportSummary() {
   if (!state.lastImport) return '<p class="empty-state">尚未导入 Excel。本阶段会自动跳过 wb利润定价表、ozon利润定价表、Sheet10 等辅助 sheet。</p>';
-  const { fileName, savedCount, skuSheets, skippedSheets } = state.lastImport;
+  const { fileName, savedCount, actionCount = 0, skuSheets, skippedSheets } = state.lastImport;
   return `<div class="import-result">
     <strong>${html(fileName)}</strong>
     <span>保存/覆盖 ${savedCount} 行</span>
+    <span>Excel 自动识别动作：${actionCount} 条</span>
     <span>识别 SKU：${skuSheets.map(html).join('、') || '-'}</span>
     <span>跳过辅助 sheet：${skippedSheets.map(html).join('、') || '-'}</span>
   </div>`;
@@ -185,15 +188,29 @@ async function handleActionDelete(uniqueKey = getCurrentActionKey()) {
   render();
 }
 
+function actionFieldVisible(field, draft) {
+  if (['cpcSearchBid'].includes(field.key)) return draft.adMode === 'CPC';
+  if (field.key === 'cpmBidType') return draft.adMode === 'CPM';
+  if (field.key === 'cpmSearchBid') return draft.adMode === 'CPM' && draft.cpmBidType === '手动出价' && ['搜索', '搜索+推荐'].includes(draft.adPosition);
+  if (field.key === 'cpmRecommendBid') return draft.adMode === 'CPM' && draft.cpmBidType === '手动出价' && ['推荐', '搜索+推荐'].includes(draft.adPosition);
+  if (field.key === 'cpmUnifiedBid') return draft.adMode === 'CPM' && draft.cpmBidType === '统一出价';
+  if (field.key === 'dailyBudget') return ['CPC', 'CPM'].includes(draft.adMode);
+  if (field.key === 'adPosition') return ['CPC', 'CPM'].includes(draft.adMode);
+  return true;
+}
+
 function renderActionField(field) {
-  const value = state.actionDraft[field.key] ?? '';
+  const draft = applyAdRules(state.actionDraft);
+  if (!actionFieldVisible(field, draft)) return '';
+  const value = draft[field.key] ?? '';
   if (field.type === 'textarea') {
     return `<label class="form-field wide-field"><span>${field.label}</span><textarea data-action-field="${field.key}" rows="3">${html(value)}</textarea></label>`;
   }
   if (field.type === 'number') {
     return `<label class="form-field"><span>${field.label}</span><input data-action-field="${field.key}" type="number" step="0.01" value="${html(value)}" /></label>`;
   }
-  return `<label class="form-field"><span>${field.label}</span><select data-action-field="${field.key}"><option value="">请选择</option>${field.options.map((option) => `<option value="${html(option)}" ${option === value ? 'selected' : ''}>${html(option)}</option>`).join('')}</select></label>`;
+  const disabled = field.key === 'adPosition' && draft.adMode === 'CPC' ? 'disabled' : '';
+  return `<label class="form-field"><span>${field.label}</span><select data-action-field="${field.key}" ${disabled}><option value="">请选择</option>${field.options.map((option) => `<option value="${html(option)}" ${option === value ? 'selected' : ''}>${html(option)}</option>`).join('')}</select></label>`;
 }
 
 function renderActionModule(dates, skus) {
@@ -223,6 +240,15 @@ function renderSkuDetail(record, action) {
       <div><span>广告费</span><strong>${formatMoney(record.adSpend)}</strong></div>
       <div><span>销售额</span><strong>${formatMoney(record.revenue)}</strong></div>
       <div><span>利润</span><strong>${formatMoney(record.profit)}</strong></div>
+      <div><span>广告状态</span><strong>${html(action?.adStatus || record.adStatus || '-')}</strong></div>
+      <div><span>广告模式</span><strong>${html(action?.adMode || '-')}</strong></div>
+      <div><span>广告位置</span><strong>${html(action?.adPosition || '-')}</strong></div>
+      <div><span>出价方式</span><strong>${html(action?.cpmBidType || '-')}</strong></div>
+      <div><span>CPC搜索出价</span><strong>${html(action?.cpcSearchBid ?? '-')}</strong></div>
+      <div><span>CPM搜索出价</span><strong>${html(action?.cpmSearchBid ?? '-')}</strong></div>
+      <div><span>CPM推荐出价</span><strong>${html(action?.cpmRecommendBid ?? '-')}</strong></div>
+      <div><span>统一出价</span><strong>${html(action?.cpmUnifiedBid ?? '-')}</strong></div>
+      <div><span>每日预算</span><strong>${html(action?.dailyBudget ?? '-')}</strong></div>
     </div>
     <section class="detail-section"><h4>Excel 运营动作原文</h4><p>${html(record.operationAction || 'Excel 中未填写运营动作原文')}</p></section>
     <section class="detail-section"><h4>系统结构化动作</h4><p>${html(actionToSummary(action))}</p></section>
@@ -243,7 +269,10 @@ function renderEffectCards(analyses) {
   if (!analyses.length) return '';
   return `<section class="panel"><div class="panel-heading"><span class="panel-icon">↗</span><div><h2>动作效果分析卡片</h2><p>对比今天 vs 昨天、近 3 天/7 天均值，以及动作前 3 天 vs 动作后 3 天。</p></div></div><div class="effect-grid">${analyses.map((item) => {
     const effectText = item.effects.length ? item.effects.map((effect) => `${effect.level}：${effect.text}`).join(' ') : '暂无明确动作效果，建议继续观察。';
+    const yesterdayAction = item.previousAction || item.latestAction;
+    const resultText = `昨天动作 → 今天结果：${actionToSummary(yesterdayAction)}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatMoney(item.metrics.adSpend.today)}，利润 ${formatMoney(item.metrics.profit.today)}。`;
     return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(actionToSummary(item.latestAction))}</span></div>
+      <p>${html(resultText)}</p>
       <p>${html(effectText)}</p>
       <div class="mini-metrics">
         <span>订单 ${formatNumber(item.metrics.totalOrders.today)} / 昨日 ${formatNumber(item.metrics.totalOrders.yesterday)}</span>
@@ -333,7 +362,7 @@ function render() {
   document.getElementById('action-sku')?.addEventListener('change', (event) => { state.actionDraft.sku = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.querySelectorAll('[data-action-field]').forEach((input) => {
     input.addEventListener('input', (event) => { state.actionDraft[event.target.dataset.actionField] = event.target.value; });
-    input.addEventListener('change', (event) => { state.actionDraft[event.target.dataset.actionField] = event.target.value; });
+    input.addEventListener('change', (event) => { state.actionDraft[event.target.dataset.actionField] = event.target.value; state.actionDraft.source = state.actionDraft.source === 'Excel 自动识别' ? '手动修改' : state.actionDraft.source; state.actionDraft = applyAdRules(state.actionDraft); render(); });
   });
   document.getElementById('save-action')?.addEventListener('click', handleActionSave);
   document.getElementById('delete-action')?.addEventListener('click', () => handleActionDelete());

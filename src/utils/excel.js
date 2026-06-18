@@ -1,4 +1,5 @@
 import { DAILY_FIELDS, NUMERIC_FIELD_KEYS, fieldLabels, isSkuSheet } from './fields.js';
+import { parseOperationActionText } from './actions.js';
 
 const SHEETJS_CDN = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
 
@@ -16,17 +17,24 @@ const loadSheetJs = () => new Promise((resolve, reject) => {
 });
 
 const normalizeHeader = (value) => String(value ?? '').trim().replace(/\s+/g, '').toLowerCase();
-const excelDateEpoch = Date.UTC(1899, 11, 30);
+const pad2 = (value) => String(value).padStart(2, '0');
+const formatYmd = (year, month, day) => `${year}-${pad2(month)}-${pad2(day)}`;
 
-const toIsoDate = (value) => {
-  if (!value) return '';
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
-  if (typeof value === 'number') return new Date(excelDateEpoch + value * 86400000).toISOString().slice(0, 10);
+export const toIsoDate = (value, XLSX = window.XLSX) => {
+  if (value === undefined || value === null || value === '') return '';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return formatYmd(value.getFullYear(), value.getMonth() + 1, value.getDate());
+  if (typeof value === 'number') {
+    const parsed = XLSX?.SSF?.parse_date_code?.(value);
+    return parsed ? formatYmd(parsed.y, parsed.m, parsed.d) : '';
+  }
   const text = String(value).trim();
-  const match = text.match(/^(\d{4})[\-/\.年](\d{1,2})[\-/\.月](\d{1,2})/);
-  if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
-  const parsed = new Date(text);
-  return Number.isNaN(parsed.getTime()) ? text : parsed.toISOString().slice(0, 10);
+  let match = text.match(/^(\d{4})[\-/\.年](\d{1,2})[\-/\.月](\d{1,2})/);
+  if (match) return formatYmd(match[1], match[2], match[3]);
+  match = text.match(/^(\d{1,2})\s*月\s*(\d{1,2})\s*日?$/);
+  if (match) return formatYmd(new Date().getFullYear(), match[1], match[2]);
+  match = text.match(/^(\d{1,2})[\-/\.](\d{1,2})$/);
+  if (match) return formatYmd(new Date().getFullYear(), match[1], match[2]);
+  return text;
 };
 
 const toNumber = (value) => {
@@ -59,17 +67,29 @@ const findHeaderRowIndex = (rows) => rows.findIndex((row) => {
   return hasDate && hasOrdersOrProfit;
 });
 
-const normalizeSheetRow = (sheetName, headers, row) => {
+const AD_FIELD_KEYS = ['adSpend', 'adOrders', 'adShare', 'adImpressions', 'adClicks'];
+const isBlank = (value) => value === undefined || value === null || String(value).trim() === '';
+
+const detectAdStatus = (record, headers, row, headerMap) => {
+  const present = AD_FIELD_KEYS.filter((key) => headerMap[key] >= 0);
+  const allBlank = present.length === 0 || present.every((key) => isBlank(row[headerMap[key]]));
+  if (allBlank && (Number(record.totalOrders) > 0 || Number(record.revenue) > 0 || Number(record.profit) !== 0)) return '无广告数据';
+  if (AD_FIELD_KEYS.some((key) => Number(record[key]) > 0)) return '开启';
+  return allBlank ? '无广告数据' : '关闭';
+};
+
+const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   const headerMap = buildHeaderMap(headers);
   const record = { sku: sheetName.trim(), sourceSheet: sheetName.trim() };
   DAILY_FIELDS.forEach((field) => {
     if (field.key === 'sku') return;
     const index = headerMap[field.key];
     const value = index >= 0 ? row[index] : '';
-    if (field.key === 'date') record.date = toIsoDate(value);
+    if (field.key === 'date') record.date = toIsoDate(value, XLSX);
     else if (NUMERIC_FIELD_KEYS.has(field.key)) record[field.key] = toNumber(value);
     else record[field.key] = String(value ?? '').trim();
   });
+  record.adStatus = detectAdStatus(record, headers, row, headerMap);
   record.uniqueKey = `${record.date}__${record.sku}`;
   return record;
 };
@@ -81,18 +101,23 @@ export const parseExcelWorkbook = async (file) => {
   const skippedSheets = workbook.SheetNames.filter((name) => !isSkuSheet(name));
   const skuSheets = workbook.SheetNames.filter(isSkuSheet);
   const records = [];
+  const actions = [];
 
   skuSheets.forEach((sheetName) => {
     const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false, blankrows: false });
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: true, blankrows: false });
     const headerIndex = findHeaderRowIndex(rows);
     if (headerIndex < 0) return;
     const headers = rows[headerIndex];
     rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).forEach((row) => {
-      const record = normalizeSheetRow(sheetName, headers, row);
-      if (record.date) records.push(record);
+      const record = normalizeSheetRow(sheetName, headers, row, XLSX);
+      if (record.date) {
+        records.push(record);
+        const parsedAction = parseOperationActionText(record.operationAction, record.date, record.sku);
+        if (parsedAction) actions.push(parsedAction);
+      }
     });
   });
 
-  return { records, skuSheets, skippedSheets, fieldLabels };
+  return { records, actions, skuSheets, skippedSheets, fieldLabels };
 };

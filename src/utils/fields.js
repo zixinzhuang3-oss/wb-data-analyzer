@@ -14,6 +14,7 @@ export const SKU_SHEET_PATTERN = /^[A-Z]{2}\d{3,}[A-Z0-9]*$/i;
 export const DAILY_FIELDS = [
   { key: 'date', label: '日期', aliases: ['日期', 'date', '统计日期', '时间'] },
   { key: 'sku', label: 'SKU', aliases: ['SKU', 'sku', '产品', '商品编码'] },
+  { key: 'adStatus', label: '广告状态', aliases: ['广告状态'] },
   { key: 'linkId', label: '链接ID', aliases: ['链接ID', '链接id', '链接', 'linkId', 'link', 'nmId', 'NM ID'] },
   { key: 'operationAction', label: '运营动作原文', aliases: ['运营动作原文', '运营动作', '动作', '备注', '操作记录'] },
   { key: 'price', label: '价格', aliases: ['价格', '售价', 'price'] },
