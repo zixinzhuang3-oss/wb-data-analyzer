@@ -20,7 +20,7 @@ const METRICS = {
 
 const ADVICE_TYPES = [
   '保持当前策略', '降低搜索出价', '降低推荐位预算', '暂停广告', '加大预算', '提高出价', '优化主图',
-  '优化标题关键词', '降价或参加活动', '控制广告花费', '补货', '观察1天', '恢复小预算搜索广告', '暂停推荐位',
+  '优化标题关键词', '降价或参加活动', '控制广告花费', '补货', '观察1天', '恢复小预算搜索广告', '暂停推荐位', '保留CPC暂停CPM推荐', '保留CPM推荐', '关闭CPM推荐',
 ];
 
 const toDate = (date) => new Date(`${date}T00:00:00Z`);
@@ -87,9 +87,10 @@ const actionForDate = (actionsByKey, date, sku) => actionsByKey.get(`${date}__${
 const latestBidText = (action) => {
   if (!action) return '';
   const parts = [];
-  if (action.adStatus) parts.push(`广告状态 ${action.adStatus}`);
-  if (action.adMode) parts.push(`广告模式 ${action.adMode}`);
-  if (action.adPosition) parts.push(`位置 ${action.adPosition}`);
+  if (action.adStatus) parts.push(`整体广告状态 ${action.adStatus}`);
+  if (action.cpcEnabled) parts.push(`CPC ${action.cpcEnabled}`);
+  if (action.cpmEnabled) parts.push(`CPM ${action.cpmEnabled}`);
+  if (action.cpmPosition) parts.push(`CPM位置 ${action.cpmPosition}`);
   if (action.cpmBidType) parts.push(`出价方式 ${action.cpmBidType}`);
   if (action.cpcSearchBid !== '' && action.cpcSearchBid !== undefined) parts.push(`CPC搜索出价 ${action.cpcSearchBid}`);
   if (action.cpmSearchBid !== '' && action.cpmSearchBid !== undefined) parts.push(`CPM搜索出价 ${action.cpmSearchBid}`);
@@ -97,7 +98,8 @@ const latestBidText = (action) => {
   if (action.cpmUnifiedBid !== '' && action.cpmUnifiedBid !== undefined) parts.push(`统一出价 ${action.cpmUnifiedBid}`);
   if (action.searchBid !== '' && action.searchBid !== undefined) parts.push(`搜索出价 ${action.searchBid}`);
   if (action.recommendBid !== '' && action.recommendBid !== undefined) parts.push(`推荐位出价 ${action.recommendBid}`);
-  if (action.dailyBudget !== '' && action.dailyBudget !== undefined) parts.push(`预算 ${action.dailyBudget}`);
+  if (action.cpcDailyBudget !== '' && action.cpcDailyBudget !== undefined) parts.push(`CPC预算 ${action.cpcDailyBudget}`);
+  if (action.cpmDailyBudget !== '' && action.cpmDailyBudget !== undefined) parts.push(`CPM预算 ${action.cpmDailyBudget}`);
   return parts.join('，');
 };
 
@@ -122,14 +124,20 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
   const exposure = today.impressions || today.adImpressions || 0;
   const clicks = today.clicks || today.adClicks || 0;
   const stableOrders = Math.abs(orderDelta) <= 0.1;
-  const searchBid = (action) => number(action?.cpcSearchBid || action?.cpmSearchBid || action?.searchBid || action?.cpmUnifiedBid);
+  const cpcOn = latestAction?.cpcEnabled === '开启' || latestAction?.adMode === 'CPC' || latestAction?.adStatus === '仅 CPC' || latestAction?.adStatus === 'CPC+CPM';
+  const cpmOn = latestAction?.cpmEnabled === '开启' || latestAction?.adMode === 'CPM' || latestAction?.adStatus === '仅 CPM' || latestAction?.adStatus === 'CPC+CPM';
+  const cpmPosition = latestAction?.cpmPosition || latestAction?.adPosition || '整体广告';
+  const hasCpmSearch = cpmOn && ['仅搜索', '搜索', '搜索+推荐'].includes(cpmPosition);
+  const hasCpmRecommend = cpmOn && ['仅推荐', '推荐', '搜索+推荐'].includes(cpmPosition);
+  const cpcSearchBid = (action) => number(action?.cpcSearchBid || action?.searchBid);
+  const cpmSearchBid = (action) => number(action?.cpmSearchBid || action?.cpmUnifiedBid || action?.searchBid);
   const recommendBid = (action) => number(action?.cpmRecommendBid || action?.recommendBid || action?.cpmUnifiedBid);
-  const bidIncreased = latestAction && previousAction && (searchBid(latestAction) > searchBid(previousAction) || recommendBid(latestAction) > recommendBid(previousAction) || number(latestAction.dailyBudget) > number(previousAction.dailyBudget));
-  const budgetReduced = latestAction?.budgetAction === '降低预算' || (latestAction && previousAction && number(latestAction.dailyBudget) < number(previousAction.dailyBudget));
-  const adStatus = latestAction?.adStatus || today.adStatus || (today.adSpend > 0 || today.adClicks > 0 || today.adImpressions > 0 ? '开启' : '无广告数据');
-  const adMode = latestAction?.adMode || (adStatus === '开启' ? 'CPM' : '无广告');
-  const adPosition = latestAction?.adPosition || '整体广告';
-  const recommendRaised = adMode === 'CPM' && ['推荐', '搜索+推荐'].includes(adPosition) && bidIncreased;
+  const totalBudget = (action) => number(action?.cpcDailyBudget) + number(action?.cpmDailyBudget || action?.dailyBudget);
+  const bidIncreased = latestAction && previousAction && (cpcSearchBid(latestAction) > cpcSearchBid(previousAction) || cpmSearchBid(latestAction) > cpmSearchBid(previousAction) || recommendBid(latestAction) > recommendBid(previousAction) || totalBudget(latestAction) > totalBudget(previousAction));
+  const budgetReduced = latestAction?.budgetAction === '降低预算' || (latestAction && previousAction && totalBudget(latestAction) < totalBudget(previousAction));
+  const adStatus = latestAction?.adStatus || today.adStatus || (today.adSpend > 0 || today.adClicks > 0 || today.adImpressions > 0 ? '仅 CPM' : '无广告');
+  const adMode = latestAction?.adMode || adStatus;
+  const recommendRaised = hasCpmRecommend && bidIncreased;
 
   if (bidIncreased && spendDelta > 0.1 && orderDelta <= 0.05 && profitDelta < 0) {
     effects.push({ level: '差', text: `${sku} 提高出价后广告费${signedPct(spendDelta)}，订单未增长，利润下降 ${money(Math.abs(profitDelta))}，动作效果差。` });
@@ -146,17 +154,24 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
     recommendations.push(makeRecommendation('降低推荐位预算', `${sku} 推荐流量放量后点击率下降，建议明天降低推荐位预算，把预算转向搜索或高转化入口。`, '高'));
   }
 
-  if (adMode === 'CPC' && clicks >= 10 && metrics.totalOrders.today <= 1) recommendations.push(makeRecommendation('降低搜索出价', `${sku} CPC 搜索点击多但订单少，建议降低 CPC 搜索出价，或优化关键词/主图/价格。`, '高'));
-  if (adMode === 'CPC' && metrics.adSpend.today > metrics.adSpend.last3Avg && profit < 0) recommendations.push(makeRecommendation('暂停广告', `${sku} CPC 花费高且利润为负，建议降低 CPC 出价或暂停 CPC 搜索广告。`, '高'));
-  if (adMode === 'CPC' && roi > 2 && profit > 0 && stock > 20) recommendations.push(makeRecommendation('加大预算', `${sku} CPC 搜索 ROI ${roi.toFixed(2)} 且利润为正，库存充足，可小幅提高搜索出价或预算。`, '中'));
+  if (cpcOn && cpmOn) {
+    effects.push({ level: '观察', text: `${sku} 同时开启 CPC 和 CPM，应拆分观察 CPC搜索、CPM搜索、CPM推荐，以及整体广告投入与利润。` });
+    if (profit < 0 && spendDelta > 0.1 && orderDelta <= 0.05) recommendations.push(makeRecommendation('控制广告花费', `${sku} CPC 和 CPM 都花费高、订单没有增长且利润下降，建议整体降低预算，优先保留转化更好的广告位置。`, '高'));
+    if (roi > 2 && profit > 0 && hasCpmRecommend && ctrDelta < -0.1) recommendations.push(makeRecommendation('保留CPC暂停CPM推荐', `${sku} CPC 搜索表现较稳但 CPM 推荐点击率走弱，建议保留 CPC 搜索，降低或暂停 CPM 推荐。`, '高'));
+    if (clicks >= 10 && cvr < 0.02 && hasCpmRecommend && metrics.totalOrders.today > 0 && metrics.adSpend.today <= metrics.adSpend.last3Avg) recommendations.push(makeRecommendation('保留CPM推荐', `${sku} CPC 搜索点击多但转化偏差，CPM 推荐花费较低且有订单，建议降低 CPC 搜索出价，保留 CPM 推荐继续观察。`, '高'));
+  }
 
-  if (adMode === 'CPM' && ['搜索', '搜索+推荐'].includes(adPosition)) {
+  if (cpcOn && clicks >= 10 && metrics.totalOrders.today <= 1) recommendations.push(makeRecommendation('降低搜索出价', `${sku} CPC 搜索点击多但订单少，建议降低 CPC 搜索出价，或优化关键词/主图/价格。`, '高'));
+  if (cpcOn && metrics.adSpend.today > metrics.adSpend.last3Avg && profit < 0) recommendations.push(makeRecommendation('暂停广告', `${sku} CPC 花费高且利润为负，建议降低 CPC 出价或暂停 CPC 搜索广告。`, '高'));
+  if (cpcOn && roi > 2 && profit > 0 && stock > 20) recommendations.push(makeRecommendation('加大预算', `${sku} CPC 搜索 ROI ${roi.toFixed(2)} 且利润为正，库存充足，可小幅提高搜索出价或预算。`, '中'));
+
+  if (hasCpmSearch) {
     if (exposure > 1000 && metrics.ctr.today < 0.01) recommendations.push(makeRecommendation('优化主图', `${sku} CPM搜索曝光高但 CTR 仅 ${pct(metrics.ctr.today)}，建议优化主图、标题和价格。`, '高'));
     if (metrics.ctr.today >= 0.01 && cvr < 0.02) recommendations.push(makeRecommendation('降价或参加活动', `${sku} CPM搜索点击率正常但转化率低，建议优化价格、评价和详情页。`, '中'));
     if (spendDelta > 0.1 && orderDelta <= 0.05) recommendations.push(makeRecommendation('降低搜索出价', `${sku} CPM搜索广告费上涨但订单未增长，建议降低搜索出价 10%–20%。`, '高'));
   }
 
-  if (adMode === 'CPM' && ['推荐', '搜索+推荐'].includes(adPosition)) {
+  if (hasCpmRecommend) {
     if (metrics.impressions.todayVsYesterday.rate > 0.1 && ctrDelta < -0.1) {
       risks.push(`${sku} 推荐流量质量差。`);
       recommendations.push(makeRecommendation('降低推荐位预算', `${sku} CPM推荐曝光增加但 CTR 下降，建议降低推荐位预算或推荐出价。`, '高'));
@@ -165,12 +180,17 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
     if (roi > 2 && profit > 0 && metrics.totalOrders.today > 0) recommendations.push(makeRecommendation('保持当前策略', `${sku} CPM推荐带来订单且 ROI 为正，可保留推荐位预算。`, '中'));
   }
 
-  if ((adStatus === '关闭' || adStatus === '无广告数据' || adMode === '无广告')) {
+  if (!cpcOn && hasCpmRecommend && !hasCpmSearch) {
+    if (exposure > 1000 && metrics.ctr.today < 0.01) recommendations.push(makeRecommendation('暂停推荐位', `${sku} 只开 CPM 推荐但曝光高、点击率低，建议降低推荐出价或暂停推荐，并考虑恢复低预算搜索广告。`, '高'));
+    if (metrics.totalOrders.today > 0 && roi > 1 && profit > 0) recommendations.push(makeRecommendation('保持当前策略', `${sku} 只开 CPM 推荐且订单稳定、ROI 为正，建议继续保留推荐位，暂不加大预算，观察 1 天。`, '中'));
+  }
+
+  if ((!cpcOn && !cpmOn) || adStatus === '无广告' || adStatus === '关闭' || adStatus === '无广告数据') {
     if (stock > 0 && stock < Math.max(5, metrics.totalOrders.last3Avg * 2)) recommendations.push(makeRecommendation('补货', `${sku} 广告关闭且库存不足，不建议恢复广告，优先补货。`, '高'));
     else if (stableOrders && profitDelta > 0) recommendations.push(makeRecommendation('保持当前策略', `${sku} 广告关闭/无数据后订单稳定、利润提升，说明控费有效，建议继续观察，暂不恢复广告。`, '中'));
-    else if (orderDelta < -0.15) { risks.push(`${sku} 广告关闭后订单下降。`); recommendations.push(makeRecommendation('恢复小预算搜索广告', `${sku} 广告关闭/无数据后订单下降，建议恢复小预算搜索广告测试。`, '高')); }
+    else if (orderDelta < -0.15) { risks.push(`${sku} 广告关闭后订单下降。`); recommendations.push(makeRecommendation('恢复小预算搜索广告', `${sku} 广告关闭/无数据后订单下降，建议恢复低预算 CPC 搜索或 CPM 搜索测试，不建议直接大预算投推荐。`, '高')); }
     else if (metrics.totalOrders.today === 0) recommendations.push(makeRecommendation('优化标题关键词', `${sku} 广告关闭且无订单，建议检查价格、主图、评价、关键词，再决定是否恢复广告。`, '高'));
-    else recommendations.push(makeRecommendation('观察1天', `${sku} 广告关闭/无数据但自然订单尚可，可低预算测试 CPM 搜索，不建议直接大预算投放。`, '低'));
+    else recommendations.push(makeRecommendation('观察1天', `${sku} 广告关闭/无数据但自然订单尚可，可继续观察；如订单下降，优先恢复低预算 CPC 搜索或 CPM 搜索测试，不建议直接大预算投推荐。`, '低'));
   }
 
   if (metrics.adSpend.today > metrics.revenue.today * 0.35 && metrics.adSpend.today > 0) risks.push(`${sku} 广告费过高。`);
