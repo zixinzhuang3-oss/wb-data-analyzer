@@ -21,6 +21,16 @@ npm run dev
 
 浏览器打开 <http://localhost:5173> 后上传 Excel 文件。当前实现为零 npm 依赖；Excel 解析会在浏览器端动态加载 SheetJS CDN。
 
+
+## GitHub Pages 部署
+
+本项目已配置 GitHub Actions 自动部署到 GitHub Pages：
+
+- 推送到 `main` 或 `master` 分支时会自动运行 `.github/workflows/deploy.yml`。
+- 也可以在 GitHub 仓库的 **Actions** 页面手动运行 `Deploy to GitHub Pages` 工作流。
+- 部署完成后，在工作流运行详情的 `deploy` job、仓库 **Settings → Pages**，或 GitHub Actions 生成的 `github-pages` 环境中查看访问链接。
+- Pages 站点发布的是 `dist/` 静态产物；构建会保留 `index.html`、`src/` 和 `sample-data/`，页面仍在浏览器端使用 IndexedDB 保存历史数据和动作记录，并通过 SheetJS CDN 解析 Excel。
+
 ## SKU sheet 识别规则
 
 有效 SKU sheet 名称需要匹配类似 `ES032BK` 的格式：英文字母开头 + 至少 3 位数字 + 可选字母/数字后缀。
