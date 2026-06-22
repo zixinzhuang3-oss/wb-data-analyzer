@@ -124,7 +124,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .period-summary p { margin: 0; color: #516074; line-height: 1.7; }
 @media (max-width: 1050px) { .period-filter-row, .period-range-row, .extended-metrics { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 720px) { .period-filter-row, .period-range-row, .extended-metrics { grid-template-columns: 1fr; } }
-.quick-range-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-content: end; }
+.summary-panel .quick-range-buttons, .quick-range-buttons { display: flex; flex-wrap: wrap; gap: 8px; align-content: end; }
 .quick-range-buttons > span { flex-basis: 100%; color: #516074; font-weight: 800; }
 .quick-range-button { padding: 10px 12px; border: 1px solid #d8e0ee; background: #fff; color: #25457d; }
 .quick-range-button.active { background: #315fc7; color: #fff; border-color: #315fc7; }

@@ -136,7 +136,6 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
   const bidIncreased = latestAction && previousAction && (cpcSearchBid(latestAction) > cpcSearchBid(previousAction) || cpmSearchBid(latestAction) > cpmSearchBid(previousAction) || recommendBid(latestAction) > recommendBid(previousAction) || totalBudget(latestAction) > totalBudget(previousAction));
   const budgetReduced = latestAction?.budgetAction === '降低预算' || (latestAction && previousAction && totalBudget(latestAction) < totalBudget(previousAction));
   const adStatus = latestAction?.adStatus || today.adStatus || (today.adSpend > 0 || today.adClicks > 0 || today.adImpressions > 0 ? '仅 CPM' : '无广告');
-  const adMode = latestAction?.adMode || adStatus;
   const recommendRaised = hasCpmRecommend && bidIncreased;
 
 

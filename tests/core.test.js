@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { toIsoDate } from '../src/utils/excel.js';
 import { parseOperationActionText, normalizeAction, actionToSummary } from '../src/utils/actions.js';
 import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
@@ -111,6 +112,15 @@ const allDatesComparison = buildPeriodComparison(rangeRecords, { quickRange: '�
 assert.equal(allDatesComparison.currentRange.startDate, '2026-06-08');
 assert.equal(allDatesComparison.currentRange.endDate, '2026-06-21');
 assert.equal(allDatesComparison.hasComparison, false);
+
+
+const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+assert.match(mainSource, /id="start-date-filter" type="date"/);
+assert.match(mainSource, /id="end-date-filter" type="date"/);
+assert.doesNotMatch(mainSource, /id="date-filter"/);
+assert.doesNotMatch(mainSource, /quick-range-filter/);
+assert.match(mainSource, /data-quick-range/);
+assert.match(mainSource, /全部日期/);
 
 const periodLinked = buildEffectAnalysis(rangeRecords, [], { startDate: '2026-06-15', endDate: '2026-06-21', sku: 'ES100BK' }, singleSkuComparison)[0];
 assert.ok(periodLinked.recommendations.some((item) => item.reason.includes('当前选择时间段')));
