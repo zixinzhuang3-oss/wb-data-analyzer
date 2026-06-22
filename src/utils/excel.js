@@ -1,5 +1,6 @@
 import { DAILY_FIELDS, NUMERIC_FIELD_KEYS, fieldLabels, isSkuSheet } from './fields.js';
 import { parseOperationActionText } from './actions.js';
+import { CNY_TO_RUB } from './currency.js';
 
 const SHEETJS_CDN = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
 
@@ -157,6 +158,9 @@ export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   record.adShare = safeDivide(record.adSpend, record.revenue) || record.adShare || 0;
   record.adCostPerOrder = safeDivide(record.adSpend, record.adOrders) || record.adCostPerOrder || 0;
   record.adAvgClickCost = safeDivide(record.adSpend, record.adClicks) || record.adAvgClickCost || 0;
+  record.profitCny = Number(record.profit) || 0;
+  record.profitRub = Math.round(record.profitCny * CNY_TO_RUB * 100) / 100;
+  record.profit = record.profitCny;
   record.adStatus = detectAdStatus(record, headers, row, headerMap);
   record.uniqueKey = `${record.date}__${record.sku}`;
   return record;
