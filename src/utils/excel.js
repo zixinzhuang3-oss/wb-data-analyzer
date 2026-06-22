@@ -54,6 +54,7 @@ const FIXED_COLUMNS = {
   ctr: 15,
   addToCart: 16,
   conversionRate: 17,
+  revenue: 26,
   adSpend: 27,
   adOrders: 28,
   adShare: 29,
@@ -73,7 +74,8 @@ const FIXED_COLUMN_LABELS = {
   ctr: 'P列',
   addToCart: 'Q列',
   conversionRate: 'R列',
-  adSpend: 'AB列',
+  revenue: 'AA列（卢布 ₽）',
+  adSpend: 'AB列（卢布 ₽）',
   adOrders: 'AC列',
   adShare: 'AD列',
   adCtr: 'AE列',
@@ -82,7 +84,15 @@ const FIXED_COLUMN_LABELS = {
   adClickAddToCartRate: 'AH列',
   adAddToCart: 'AI列',
   adCostPerOrder: 'AJ列',
-  adAvgClickCost: 'AK列',
+  adAvgClickCost: 'AK列（卢布 ₽）',
+  profit: '利润列（人民币 ¥）',
+};
+
+
+const DIAGNOSTIC_FIELD_LABELS = {
+  revenue: '总订单销售额',
+  adSpend: '总广告费',
+  profit: '利润',
 };
 
 const buildHeaderMap = (headers) => {
@@ -154,7 +164,7 @@ export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
 
 const buildSheetDiagnostics = (sheetName, rows, headerIndex, XLSX) => ({
   sheetName,
-  fields: Object.fromEntries(Object.entries(FIXED_COLUMN_LABELS).map(([key, column]) => [fieldLabels[key] || key, column])),
+  fields: Object.fromEntries(Object.entries(FIXED_COLUMN_LABELS).map(([key, column]) => [DIAGNOSTIC_FIELD_LABELS[key] || fieldLabels[key] || key, column])),
   blankAdDates: rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row) && AD_FIELD_KEYS.every((key) => isBlank(row[FIXED_COLUMNS[key]]))).map((row) => toIsoDate(row[FIXED_COLUMNS.date], XLSX)).filter(Boolean),
 });
 

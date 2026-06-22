@@ -141,7 +141,11 @@ export const analyzeBusiness = ({ salesRows = [], adsRows = [], linkRows = [] })
   return { totals, items, recommendations: buildRecommendations(items, totals) };
 };
 
-export const formatMoney = (value) =>
+export const formatYuan = (value) =>
   new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 }).format(value || 0);
+
+export const formatRuble = (value) => `₽${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value || 0)}`;
+
+export const formatMoney = formatYuan;
 
 export const formatPercent = (value) => `${((value || 0) * 100).toFixed(1)}%`;
