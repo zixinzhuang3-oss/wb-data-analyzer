@@ -244,8 +244,9 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
 
   const analyses = [...bySku.entries()].map(([sku, skuRecords]) => {
     const sorted = skuRecords.sort((a, b) => a.date.localeCompare(b.date));
-    const targetDate = filters.date || sorted.at(-1)?.date;
-    const today = sorted.find((record) => record.date === targetDate) || (!filters.date ? sorted.at(-1) : null);
+    const inRange = sorted.filter((record) => (filters.allDates || !filters.startDate || record.date >= filters.startDate) && (filters.allDates || !filters.endDate || record.date <= filters.endDate));
+    const targetDate = filters.endDate || filters.date || inRange.at(-1)?.date || sorted.at(-1)?.date;
+    const today = inRange.find((record) => record.date === targetDate) || inRange.at(-1) || (!filters.startDate && !filters.endDate && !filters.date ? sorted.at(-1) : null);
     if (!today) return null;
     const todayIndex = sorted.findIndex((record) => record.uniqueKey === today.uniqueKey);
     const yesterdayDate = addDays(today.date, -1);

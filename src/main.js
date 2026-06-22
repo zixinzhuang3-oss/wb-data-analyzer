@@ -1,6 +1,6 @@
 import { parseExcelWorkbook } from './utils/excel.js';
 import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup, saveAction, saveRecords } from './utils/storage.js';
-import { filterRecords, getDateOptions, getSkuOptions, summarizeByDate, summarizeRecords } from './utils/history.js';
+import { addDays, buildComparison, filterRecords, getDateOptions, getLatestDate, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatMoney, formatPercent } from './utils/analysis.js';
 import { ACTION_FIELDS, actionToSummary, applyAdRules, createEmptyAction, normalizeAction } from './utils/actions.js';
@@ -11,7 +11,7 @@ const state = {
   records: [],
   actions: [],
   actionDraft: createEmptyAction(),
-  filters: { date: '', sku: '' },
+  filters: { startDate: '', endDate: '', allDates: false, sku: '' },
   lastImport: null,
   selectedDetailKey: '',
   status: '请上传包含 SKU sheet 的 Excel 文件，系统会把“日期 + SKU”作为唯一键保存到 IndexedDB。',
@@ -257,9 +257,10 @@ function renderSkuDetail(record, action) {
 }
 
 
-function renderStrategyBoard(analyses) {
+function renderStrategyBoard(analyses, comparison) {
   if (!analyses.length) return '<section class="panel"><h2>明日策略建议看板</h2><p class="empty-state">导入历史数据后将自动生成明日策略建议。</p></section>';
-  return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合历史数据和每日动作，判断动作是否有效，并输出明日广告与运营建议。</p></div></div><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
+  const context = comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatMoney(deltaInfo(comparison.current.totalProfit, comparison.previous.totalProfit).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
+  return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、上一同长度时间段和每日动作，判断动作是否有效，并输出明日广告与运营建议。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
     <div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(item.date)}</span></div>
     <h3>${html(item.primaryRecommendation.type)}</h3>
     <p>${html(item.primaryRecommendation.reason)}</p>
@@ -296,9 +297,103 @@ function renderSuggestionHistory(analyses, dates, skus) {
   return `<section class="panel"><div class="panel-heading"><span class="panel-icon">☷</span><div><h2>建议历史</h2><p>建议历史跟随上方日期和 SKU 筛选，可查看每个 SKU 的建议类型和原因。</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>SKU</th><th>建议类型</th><th>优先级</th><th>原因</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.date)}</td><td>${html(row.sku)}</td><td>${html(row.type)}</td><td>${html(row.priority)}</td><td>${html(row.reason)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty-state">当前筛选范围暂无建议。</p>'}</section>`;
 }
 
+const metricConfig = [
+  ['总订单', 'totalOrders', formatNumber],
+  ['总销售额', 'totalRevenue', formatMoney],
+  ['总广告费', 'totalAdSpend', formatMoney],
+  ['总利润', 'totalProfit', formatMoney],
+  ['利润率', 'margin', formatPercent],
+  ['广告占比', 'adShare', formatPercent],
+  ['ROI', 'roi', formatNumber],
+  ['ACOS', 'acos', formatPercent],
+  ['曝光', 'impressions', formatNumber],
+  ['点击', 'clicks', formatNumber],
+  ['CTR', 'ctr', formatPercent],
+  ['CVR', 'cvr', formatPercent],
+  ['SKU 数量', 'skuCount', formatNumber],
+  ['日期数量', 'dateCount', formatNumber],
+];
+
+const deltaInfo = (current, previous) => {
+  const value = (Number(current) || 0) - (Number(previous) || 0);
+  const rate = previous ? value / Math.abs(previous) : 0;
+  return { value, rate, trend: Math.abs(value) < 0.000001 ? '持平' : value > 0 ? '上升' : '下降' };
+};
+
+const rangeText = (range) => range?.allDates ? '全部日期' : `${range.startDate || '-'} 至 ${range.endDate || '-'}`;
+
+function renderComparisonMetrics(comparison) {
+  return `<div class="period-line"><strong>当前时间段：${html(rangeText(comparison.currentRange))}</strong><strong>对比时间段：${comparison.previousRange ? html(rangeText(comparison.previousRange)) : '全部日期暂无上期对比'}</strong></div>
+  <div class="metrics-grid comparison-grid">${metricConfig.map(([label, key, formatter]) => {
+    const current = comparison.current[key];
+    const previous = comparison.previous[key];
+    const diff = deltaInfo(current, previous);
+    const noPrevious = !comparison.hasPreviousData;
+    return `<div class="metric-card comparison-card"><span>${label}</span><strong>${formatter(current)}</strong><small>上期：${noPrevious ? '无对比数据' : formatter(previous)}</small><small>变化：${noPrevious ? '无对比数据' : `${formatter(diff.value)} / ${formatPercent(diff.rate)}`}</small><small>趋势：${noPrevious ? '无对比数据' : diff.trend}</small></div>`;
+  }).join('')}</div>`;
+}
+
+function judgeSku(current, previous) {
+  const order = deltaInfo(current.totalOrders, previous.totalOrders);
+  const spend = deltaInfo(current.totalAdSpend, previous.totalAdSpend);
+  const profit = deltaInfo(current.totalProfit, previous.totalProfit);
+  if ((current.stock || 0) > 0 && current.stock < Math.max(5, current.totalOrders * 2)) return '库存风险';
+  if (spend.value > 0 && order.value <= 0) return '广告费上升但订单未增长';
+  if (profit.value < 0) return '利润下降';
+  if (spend.value < 0 && order.value >= 0 && profit.value > 0) return '控费有效';
+  if (order.value > 0 && profit.value > 0 && current.roi > 1.5) return '建议加预算';
+  if (current.totalAdSpend > 0 && current.totalOrders === 0 && current.totalProfit < 0) return '建议暂停广告';
+  if (order.value > 0 || profit.value > 0) return '表现改善';
+  return '需要观察';
+}
+
+function buildSkuRows(comparison) {
+  const skus = [...new Set([...comparison.currentRecords, ...comparison.previousRecords].map((row) => row.sku).filter(Boolean))].sort();
+  return skus.map((sku) => {
+    const current = comparison.currentRecords.filter((row) => row.sku === sku);
+    const previous = comparison.previousRecords.filter((row) => row.sku === sku);
+    const currentSummary = summarizeSku(current);
+    const previousSummary = summarizeSku(previous);
+    return { sku, current: currentSummary, previous: previousSummary, judge: comparison.hasPreviousData ? judgeSku(currentSummary, previousSummary) : '无对比数据' };
+  });
+}
+
+function summarizeSku(rows) {
+  const totalOrders = rows.reduce((sum, row) => sum + (Number(row.totalOrders) || 0), 0);
+  const totalRevenue = rows.reduce((sum, row) => sum + (Number(row.revenue) || 0), 0);
+  const totalAdSpend = rows.reduce((sum, row) => sum + (Number(row.adSpend) || 0), 0);
+  const totalProfit = rows.reduce((sum, row) => sum + (Number(row.profit) || 0), 0);
+  const stock = rows.at(-1)?.stock || 0;
+  return { totalOrders, totalRevenue, totalAdSpend, totalProfit, stock, roi: totalAdSpend ? totalRevenue / totalAdSpend : 0, acos: totalRevenue ? totalAdSpend / totalRevenue : 0 };
+}
+
+function renderSkuComparison(comparison) {
+  const rows = buildSkuRows(comparison);
+  if (!rows.length) return '<section class="panel"><h2>SKU 区间对比</h2><p class="empty-state">当前筛选范围暂无 SKU 数据。</p></section>';
+  const change = (a, b, formatter = formatNumber) => formatter((Number(a) || 0) - (Number(b) || 0));
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">⇄</span><div><h2>SKU 区间对比</h2><p>${state.filters.sku ? '当前为单个 SKU 区间趋势。' : '全部 SKU 按当前区间与上一同长度区间逐项对比。'}</p></div></div><div class="table-wrap"><table><thead><tr><th>SKU</th><th>当前订单</th><th>上期订单</th><th>订单变化</th><th>当前销售额</th><th>上期销售额</th><th>销售额变化</th><th>当前广告费</th><th>上期广告费</th><th>广告费变化</th><th>当前利润</th><th>上期利润</th><th>利润变化</th><th>当前 ROI</th><th>上期 ROI</th><th>当前 ACOS</th><th>上期 ACOS</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.sku)}</td><td>${formatNumber(row.current.totalOrders)}</td><td>${comparison.hasPreviousData ? formatNumber(row.previous.totalOrders) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalOrders, row.previous.totalOrders) : '无对比数据'}</td><td>${formatMoney(row.current.totalRevenue)}</td><td>${comparison.hasPreviousData ? formatMoney(row.previous.totalRevenue) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalRevenue, row.previous.totalRevenue, formatMoney) : '无对比数据'}</td><td>${formatMoney(row.current.totalAdSpend)}</td><td>${comparison.hasPreviousData ? formatMoney(row.previous.totalAdSpend) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalAdSpend, row.previous.totalAdSpend, formatMoney) : '无对比数据'}</td><td>${formatMoney(row.current.totalProfit)}</td><td>${comparison.hasPreviousData ? formatMoney(row.previous.totalProfit) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalProfit, row.previous.totalProfit, formatMoney) : '无对比数据'}</td><td>${formatNumber(row.current.roi)}</td><td>${comparison.hasPreviousData ? formatNumber(row.previous.roi) : '无对比数据'}</td><td>${formatPercent(row.current.acos)}</td><td>${comparison.hasPreviousData ? formatPercent(row.previous.acos) : '无对比数据'}</td><td>${html(row.judge)}</td></tr>`).join('')}</tbody></table></div></section>`;
+}
+
+function renderIntervalSummary(comparison) {
+  if (!comparison.hasPreviousData) return `<section class="panel"><h2>区间对比总结</h2><p class="empty-state">当前时间段 ${html(rangeText(comparison.currentRange))}，无对比数据。</p></section>`;
+  const order = deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders);
+  const spend = deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend);
+  const profit = deltaInfo(comparison.current.totalProfit, comparison.previous.totalProfit);
+  let advice = '建议继续观察核心 SKU 的订单、广告费和利润变化。';
+  if (spend.value < 0 && Math.abs(order.rate) <= 0.1 && profit.value > 0) advice = '说明控费效果较好，建议继续保持当前预算策略。';
+  else if (spend.rate > 0.2 && order.rate < 0.1 && profit.value < 0) advice = '说明广告放量效率较差，建议重点检查高花费 SKU，并降低 ROI 差的广告预算。';
+  else if (order.value > 0 && profit.value > 0 && comparison.current.roi > 1.5) advice = '说明增长质量较好，库存充足 SKU 可适当加预算。';
+  return `<section class="panel"><h2>区间对比总结</h2><p>当前时间段 ${html(rangeText(comparison.currentRange))}，较上一时间段订单${order.value >= 0 ? '增加' : '减少'} ${formatPercent(Math.abs(order.rate))}，广告费${spend.value >= 0 ? '增加' : '下降'} ${formatPercent(Math.abs(spend.rate))}，利润${profit.value >= 0 ? '增加' : '下降'} ${formatMoney(Math.abs(profit.value))}，${advice}</p></section>`;
+}
+
 function render() {
+  if (state.records.length && !state.filters.startDate && !state.filters.endDate && !state.filters.allDates) {
+    const latestDate = getLatestDate(state.records);
+    state.filters.startDate = latestDate;
+    state.filters.endDate = latestDate;
+  }
   const filtered = filterRecords(state.records, state.filters);
-  const totals = summarizeRecords(filtered);
+  const comparison = buildComparison(state.records, state.filters);
   const dates = getDateOptions(state.records);
   const skus = getSkuOptions(state.records);
   const actions = actionMap();
@@ -330,20 +425,26 @@ function render() {
     <section class="panel">
       <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>按日期和 SKU 查看已导入历史数据，所有数据保存在当前浏览器 IndexedDB 中。</p></div></div>
       <div class="filter-row">
-        <select id="date-filter">${renderOptions(dates, state.filters.date, '全部日期')}</select>
+        <label class="form-field"><span>开始日期</span><input id="start-date-filter" type="date" value="${html(state.filters.startDate)}" /></label>
+        <label class="form-field"><span>结束日期</span><input id="end-date-filter" type="date" value="${html(state.filters.endDate)}" /></label>
         <select id="sku-filter">${renderOptions(skus, state.filters.sku, '全部 SKU')}</select>
+        <div class="quick-range-row">
+          <button data-range-preset="today" type="button">今天</button>
+          <button data-range-preset="yesterday" type="button">昨天</button>
+          <button data-range-preset="3" type="button">最近 3 天</button>
+          <button data-range-preset="7" type="button">最近 7 天</button>
+          <button data-range-preset="14" type="button">最近 14 天</button>
+          <button data-range-preset="30" type="button">最近 30 天</button>
+          <button data-range-preset="all" type="button">全部日期</button>
+        </div>
       </div>
-      <div class="metrics-grid">
-        <div class="metric-card"><span>已选日期数</span><strong>${totals.dateCount}</strong><small>历史总记录 ${state.records.length} 行</small></div>
-        <div class="metric-card"><span>SKU 数量</span><strong>${totals.skuCount}</strong><small>当前筛选范围</small></div>
-        <div class="metric-card"><span>总订单</span><strong>${formatNumber(totals.totalOrders)}</strong><small>销售额 ${formatMoney(totals.totalRevenue)}</small></div>
-        <div class="metric-card"><span>总广告费</span><strong>${formatMoney(totals.totalAdSpend)}</strong><small>广告投入</small></div>
-        <div class="metric-card"><span>总利润</span><strong>${formatMoney(totals.totalProfit)}</strong><small>当前筛选范围</small></div>
-      </div>
+      ${renderComparisonMetrics(comparison)}
     </section>
 
+    ${renderIntervalSummary(comparison)}
+    ${renderSkuComparison(comparison)}
     ${renderActionModule(dates, skus)}
-    ${renderStrategyBoard(effectAnalyses)}
+    ${renderStrategyBoard(effectAnalyses, comparison)}
     ${renderEffectCards(effectAnalyses)}
     ${renderRiskPanel(effectAnalyses)}
     ${renderSuggestionHistory(effectAnalyses, dates, skus)}
@@ -357,8 +458,26 @@ function render() {
   document.getElementById('excel-upload')?.addEventListener('change', (event) => handleExcelUpload(event.target.files?.[0]));
   document.getElementById('backup-upload')?.addEventListener('change', (event) => handleBackupImport(event.target.files?.[0]));
   document.getElementById('export-backup')?.addEventListener('click', handleBackupExport);
-  document.getElementById('date-filter')?.addEventListener('change', (event) => { state.filters.date = event.target.value; render(); });
+  document.getElementById('start-date-filter')?.addEventListener('change', (event) => { state.filters.startDate = event.target.value; state.filters.allDates = false; render(); });
+  document.getElementById('end-date-filter')?.addEventListener('change', (event) => { state.filters.endDate = event.target.value; state.filters.allDates = false; render(); });
   document.getElementById('sku-filter')?.addEventListener('change', (event) => { state.filters.sku = event.target.value; render(); });
+  document.querySelectorAll('[data-range-preset]').forEach((button) => button.addEventListener('click', (event) => {
+    const latest = getLatestDate(state.records);
+    const preset = event.target.dataset.rangePreset;
+    state.filters.allDates = preset === 'all';
+    if (preset === 'all') {
+      state.filters.startDate = '';
+      state.filters.endDate = '';
+    } else if (preset === 'yesterday') {
+      state.filters.startDate = addDays(latest, -1);
+      state.filters.endDate = addDays(latest, -1);
+    } else {
+      const days = preset === 'today' ? 1 : Number(preset);
+      state.filters.endDate = latest;
+      state.filters.startDate = addDays(latest, -(days - 1));
+    }
+    render();
+  }));
   document.getElementById('action-date')?.addEventListener('change', (event) => { state.actionDraft.date = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.getElementById('action-sku')?.addEventListener('change', (event) => { state.actionDraft.sku = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.querySelectorAll('[data-action-field]').forEach((input) => {
