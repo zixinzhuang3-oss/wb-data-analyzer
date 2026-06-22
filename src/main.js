@@ -27,12 +27,13 @@ const formatNumber = (value) => new Intl.NumberFormat('zh-CN', { maximumFraction
 const displayFields = [
   'date', 'sku', 'adStatus', 'linkId', 'operationAction', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders',
   'totalOrders', 'impressions', 'clicks', 'ctr', 'addToCart', 'conversionRate', 'organicImpressions', 'organicClicks',
-  'organicOrders', 'adSpend', 'adOrders', 'adShare', 'adImpressions', 'adClicks', 'revenue', 'commission', 'russiaCost',
+  'organicOrders', 'adSpend', 'adOrders', 'adShare', 'adCtr', 'adImpressions', 'adClicks', 'adClickAddToCartRate',
+  'adAddToCart', 'adCostPerOrder', 'adAvgClickCost', 'revenue', 'commission', 'russiaCost',
   'deliveryFee', 'acquiringFee', 'storageFee', 'remittanceFee', 'profit', 'keywordRank',
 ];
 
-const moneyFields = new Set(['price', 'adSpend', 'revenue', 'commission', 'russiaCost', 'deliveryFee', 'acquiringFee', 'storageFee', 'remittanceFee', 'profit']);
-const percentFields = new Set(['ctr', 'conversionRate', 'adShare']);
+const moneyFields = new Set(['price', 'adSpend', 'adCostPerOrder', 'adAvgClickCost', 'revenue', 'commission', 'russiaCost', 'deliveryFee', 'acquiringFee', 'storageFee', 'remittanceFee', 'profit']);
+const percentFields = new Set(['ctr', 'conversionRate', 'adShare', 'adCtr', 'adClickAddToCartRate', 'orderConversionRate']);
 
 const renderValue = (key, value) => {
   if (moneyFields.has(key)) return formatMoney(value);
@@ -75,6 +76,7 @@ async function handleExcelUpload(file) {
       actionCount: result.actions?.length || 0,
       skuSheets: result.skuSheets,
       skippedSheets: result.skippedSheets,
+      diagnostics: result.diagnostics || [],
     };
     state.status = `导入完成：保存/覆盖 ${result.records.length} 行，自动识别动作 ${result.actions?.length || 0} 条，识别 SKU sheet ${result.skuSheets.length} 个。`;
   } catch (error) {
@@ -83,6 +85,17 @@ async function handleExcelUpload(file) {
     state.busy = false;
     render();
   }
+}
+
+function renderFieldDiagnostics() {
+  const diagnostics = state.lastImport?.diagnostics || [];
+  if (!diagnostics.length) return '';
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">⌕</span><div><h2>字段识别诊断</h2><p>整体流量与广告流量优先按固定列位读取，避免字段名变化导致读取为 0。</p></div></div>
+    <div class="record-list">${diagnostics.map((item) => `<article class="record-card">
+      <strong>${html(item.sheetName)}</strong>
+      ${Object.entries(item.fields).map(([label, column]) => `<span>${html(label)}：${html(column)}</span>`).join('')}
+      ${item.blankAdDates?.length ? `<span>广告空白日期：${item.blankAdDates.map(html).join('、')}，该日期广告数据为空，已识别为广告关闭/无广告数据</span>` : '<span>未发现广告列 AB-AK 全空的数据行</span>'}
+    </article>`).join('')}</div></section>`;
 }
 
 async function handleBackupImport(file) {
@@ -305,16 +318,27 @@ function renderSuggestionHistory(analyses, dates, skus) {
 const metricConfig = [
   ['总订单', 'totalOrders', formatNumber],
   ['总销售额', 'totalRevenue', formatMoney],
-  ['总广告费', 'totalAdSpend', formatMoney],
   ['总利润', 'totalProfit', formatMoney],
   ['利润率', 'margin', formatPercent],
-  ['广告占比', 'adShare', formatPercent],
   ['ROI', 'roi', formatNumber],
   ['ACOS', 'acos', formatPercent],
-  ['曝光', 'impressions', formatNumber],
-  ['点击', 'clicks', formatNumber],
-  ['CTR', 'ctr', formatPercent],
-  ['CVR', 'cvr', formatPercent],
+  ['总曝光', 'impressions', formatNumber],
+  ['总点击', 'clicks', formatNumber],
+  ['整体 CTR', 'ctr', formatPercent],
+  ['总加购', 'addToCart', formatNumber],
+  ['整体加购转化率', 'cvr', formatPercent],
+  ['订单转化率', 'orderConversionRate', formatPercent],
+  ['广告状态', 'adStatus', html],
+  ['总广告曝光', 'adImpressions', formatNumber],
+  ['总广告点击', 'adClicks', formatNumber],
+  ['广告 CTR', 'adCtr', formatPercent],
+  ['总广告加购', 'adAddToCart', formatNumber],
+  ['广告点击转加购率', 'adClickAddToCartRate', formatPercent],
+  ['广告订单', 'adOrders', formatNumber],
+  ['广告费', 'totalAdSpend', formatMoney],
+  ['广告费占比', 'adShare', formatPercent],
+  ['每单费用', 'adCostPerOrder', formatMoney],
+  ['广告平均点击费', 'adAvgClickCost', formatMoney],
   ['SKU 数量', 'skuCount', formatNumber],
   ['日期数量', 'dateCount', formatNumber],
 ];
@@ -438,6 +462,7 @@ function render() {
       <p class="status-line ${state.status.includes('失败') ? 'error-text' : ''}">${html(state.status)}</p>
       ${renderImportSummary()}
     </section>
+    ${renderFieldDiagnostics()}
 
     <section class="panel">
       <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>快捷时间段基于真实当前日期（优先网络时间，失败后使用浏览器本地时间），不会使用 Excel 最大日期作为今天。</p></div></div>

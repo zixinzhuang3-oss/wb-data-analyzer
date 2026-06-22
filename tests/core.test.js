@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { hasEffectiveDailyData, toIsoDate } from '../src/utils/excel.js';
+import { hasEffectiveDailyData, normalizeSheetRow, toIsoDate } from '../src/utils/excel.js';
 import { parseOperationActionText, normalizeAction, actionToSummary } from '../src/utils/actions.js';
 import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
@@ -112,5 +112,75 @@ assert.equal(filterRecords(rangeRecords, { startDate: '2026-06-17', endDate: '20
 assert.equal(filterRecords(rangeRecords, buildQuickRange('today', '2026-06-23')).length, 0);
 assert.equal(hasEffectiveDailyData({ date: '2026-07-19', sku: 'ES035BK', totalOrders: 0, adSpend: 0, revenue: 0, profit: 0, operationAction: '' }), false);
 assert.equal(hasEffectiveDailyData({ date: '2026-07-19', sku: 'ES035BK', totalOrders: 1, adSpend: 0, revenue: 0, profit: 0, operationAction: '' }), true);
+
+const fixedRow = [];
+fixedRow[0] = '2026-06-17';
+fixedRow[11] = 20; // totalOrders via fallback header name below
+fixedRow[13] = 1000;
+fixedRow[14] = 50;
+fixedRow[15] = 0;
+fixedRow[16] = 10;
+fixedRow[17] = 0;
+fixedRow[27] = 120;
+fixedRow[28] = 6;
+fixedRow[29] = 0;
+fixedRow[30] = 0;
+fixedRow[31] = 4000;
+fixedRow[32] = 200;
+fixedRow[33] = 0;
+fixedRow[34] = 40;
+fixedRow[35] = 0;
+fixedRow[36] = 0;
+fixedRow[25] = 1000;
+const fixedHeaders = ['日期', '', '', '', '', '', '', '', '', '', '', '总订单', '', '错误曝光标题', '错误点击标题', '', '', '', '', '', '', '', '', '', '', '销售额'];
+const fixedRecord = normalizeSheetRow('ES068BK', fixedHeaders, fixedRow, XLSX);
+assert.equal(fixedRecord.impressions, 1000);
+assert.equal(fixedRecord.clicks, 50);
+assert.equal(fixedRecord.ctr, 0.05);
+assert.equal(fixedRecord.addToCart, 10);
+assert.equal(fixedRecord.conversionRate, 0.2);
+assert.equal(fixedRecord.orderConversionRate, 0.4);
+assert.equal(fixedRecord.adSpend, 120);
+assert.equal(fixedRecord.adOrders, 6);
+assert.equal(fixedRecord.adImpressions, 4000);
+assert.equal(fixedRecord.adClicks, 200);
+assert.equal(fixedRecord.adCtr, 0.05);
+assert.equal(fixedRecord.adAddToCart, 40);
+assert.equal(fixedRecord.adClickAddToCartRate, 0.2);
+assert.equal(fixedRecord.adCostPerOrder, 20);
+assert.equal(fixedRecord.adAvgClickCost, 0.6);
+
+const blankAdRow = [...fixedRow];
+for (let i = 27; i <= 36; i += 1) blankAdRow[i] = '';
+blankAdRow[13] = 800;
+blankAdRow[14] = 40;
+blankAdRow[16] = 8;
+const blankAdRecord = normalizeSheetRow('ES068BK', fixedHeaders, blankAdRow, XLSX);
+assert.equal(blankAdRecord.adStatus, '无广告数据');
+assert.equal(blankAdRecord.impressions, 800);
+assert.equal(blankAdRecord.clicks, 40);
+assert.equal(blankAdRecord.conversionRate, 0.2);
+
+const trafficRecords = [
+  { date: '2026-06-17', sku: 'ES068BK', uniqueKey: '2026-06-17__ES068BK', totalOrders: 2, impressions: 100, clicks: 10, addToCart: 4, adImpressions: 1000, adClicks: 100, adAddToCart: 20, adOrders: 1, adSpend: 30, revenue: 100, profit: 10, adStatus: '开启' },
+  { date: '2026-06-18', sku: 'ES068BK', uniqueKey: '2026-06-18__ES068BK', totalOrders: 4, impressions: 300, clicks: 30, addToCart: 6, adImpressions: 2000, adClicks: 200, adAddToCart: 40, adOrders: 3, adSpend: 90, revenue: 300, profit: 20, adStatus: '开启' },
+];
+const trafficSummary = buildComparison(trafficRecords, { startDate: '2026-06-17', endDate: '2026-06-18', sku: 'ES068BK' }).current;
+assert.equal(trafficSummary.impressions, 400);
+assert.equal(trafficSummary.clicks, 40);
+assert.equal(trafficSummary.ctr, 0.1);
+assert.equal(trafficSummary.addToCart, 10);
+assert.equal(trafficSummary.cvr, 0.25);
+assert.equal(trafficSummary.orderConversionRate, 0.15);
+assert.equal(trafficSummary.adImpressions, 3000);
+assert.equal(trafficSummary.adClicks, 300);
+assert.equal(trafficSummary.adCtr, 0.1);
+assert.equal(trafficSummary.adAddToCart, 60);
+assert.equal(trafficSummary.adClickAddToCartRate, 0.2);
+assert.equal(trafficSummary.adOrders, 4);
+assert.equal(trafficSummary.totalAdSpend, 120);
+assert.equal(trafficSummary.adShare, 0.3);
+assert.equal(trafficSummary.adCostPerOrder, 30);
+assert.equal(trafficSummary.adAvgClickCost, 0.4);
 
 console.log('core tests passed');
