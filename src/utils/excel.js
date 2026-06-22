@@ -45,6 +45,45 @@ const toNumber = (value) => {
   if (Number.isNaN(parsed)) return 0;
   return raw.includes('%') ? parsed / 100 : parsed;
 };
+const safeDivide = (a, b) => (b ? a / b : 0);
+
+const FIXED_COLUMNS = {
+  date: 0,
+  impressions: 13,
+  clicks: 14,
+  ctr: 15,
+  addToCart: 16,
+  conversionRate: 17,
+  adSpend: 27,
+  adOrders: 28,
+  adShare: 29,
+  adCtr: 30,
+  adImpressions: 31,
+  adClicks: 32,
+  adClickAddToCartRate: 33,
+  adAddToCart: 34,
+  adCostPerOrder: 35,
+  adAvgClickCost: 36,
+};
+
+const FIXED_COLUMN_LABELS = {
+  date: 'A列',
+  impressions: 'N列',
+  clicks: 'O列',
+  ctr: 'P列',
+  addToCart: 'Q列',
+  conversionRate: 'R列',
+  adSpend: 'AB列',
+  adOrders: 'AC列',
+  adShare: 'AD列',
+  adCtr: 'AE列',
+  adImpressions: 'AF列',
+  adClicks: 'AG列',
+  adClickAddToCartRate: 'AH列',
+  adAddToCart: 'AI列',
+  adCostPerOrder: 'AJ列',
+  adAvgClickCost: 'AK列',
+};
 
 const buildHeaderMap = (headers) => {
   const normalizedHeaders = headers.map(normalizeHeader);
@@ -67,15 +106,22 @@ const findHeaderRowIndex = (rows) => rows.findIndex((row) => {
   return hasDate && hasOrdersOrProfit;
 });
 
-const AD_FIELD_KEYS = ['adSpend', 'adOrders', 'adShare', 'adImpressions', 'adClicks'];
+const AD_FIELD_KEYS = ['adSpend', 'adOrders', 'adShare', 'adCtr', 'adImpressions', 'adClicks', 'adClickAddToCartRate', 'adAddToCart', 'adCostPerOrder', 'adAvgClickCost'];
 const isBlank = (value) => value === undefined || value === null || String(value).trim() === '';
 
 const detectAdStatus = (record, headers, row, headerMap) => {
-  const present = AD_FIELD_KEYS.filter((key) => headerMap[key] >= 0);
-  const allBlank = present.length === 0 || present.every((key) => isBlank(row[headerMap[key]]));
+  const adColumns = AD_FIELD_KEYS.map((key) => FIXED_COLUMNS[key]).filter((index) => index !== undefined);
+  const allBlank = adColumns.every((index) => isBlank(row[index]));
   if (allBlank && (Number(record.totalOrders) > 0 || Number(record.revenue) > 0 || Number(record.profit) !== 0)) return '无广告数据';
   if (AD_FIELD_KEYS.some((key) => Number(record[key]) > 0)) return '开启';
   return allBlank ? '无广告数据' : '关闭';
+};
+
+const getFieldValue = (field, headerMap, row) => {
+  const fixedIndex = FIXED_COLUMNS[field.key];
+  if (fixedIndex !== undefined) return row[fixedIndex];
+  const index = headerMap[field.key];
+  return index >= 0 ? row[index] : '';
 };
 
 export const hasEffectiveDailyData = (record) => [...NUMERIC_FIELD_KEYS].some((key) => {
@@ -83,21 +129,34 @@ export const hasEffectiveDailyData = (record) => [...NUMERIC_FIELD_KEYS].some((k
   return Number.isFinite(value) && value !== 0;
 }) || Boolean(String(record.operationAction || '').trim());
 
-const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
+export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   const headerMap = buildHeaderMap(headers);
   const record = { sku: sheetName.trim(), sourceSheet: sheetName.trim() };
   DAILY_FIELDS.forEach((field) => {
     if (field.key === 'sku') return;
-    const index = headerMap[field.key];
-    const value = index >= 0 ? row[index] : '';
+    const value = getFieldValue(field, headerMap, row);
     if (field.key === 'date') record.date = toIsoDate(value, XLSX);
     else if (NUMERIC_FIELD_KEYS.has(field.key)) record[field.key] = toNumber(value);
     else record[field.key] = String(value ?? '').trim();
   });
+  record.ctr = safeDivide(record.clicks, record.impressions) || record.ctr || 0;
+  record.conversionRate = safeDivide(record.addToCart, record.clicks) || record.conversionRate || 0;
+  record.orderConversionRate = safeDivide(record.totalOrders, record.clicks);
+  record.adCtr = safeDivide(record.adClicks, record.adImpressions) || record.adCtr || 0;
+  record.adClickAddToCartRate = safeDivide(record.adAddToCart, record.adClicks) || record.adClickAddToCartRate || 0;
+  record.adShare = safeDivide(record.adSpend, record.revenue) || record.adShare || 0;
+  record.adCostPerOrder = safeDivide(record.adSpend, record.adOrders) || record.adCostPerOrder || 0;
+  record.adAvgClickCost = safeDivide(record.adSpend, record.adClicks) || record.adAvgClickCost || 0;
   record.adStatus = detectAdStatus(record, headers, row, headerMap);
   record.uniqueKey = `${record.date}__${record.sku}`;
   return record;
 };
+
+const buildSheetDiagnostics = (sheetName, rows, headerIndex, XLSX) => ({
+  sheetName,
+  fields: Object.fromEntries(Object.entries(FIXED_COLUMN_LABELS).map(([key, column]) => [fieldLabels[key] || key, column])),
+  blankAdDates: rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row) && AD_FIELD_KEYS.every((key) => isBlank(row[FIXED_COLUMNS[key]]))).map((row) => toIsoDate(row[FIXED_COLUMNS.date], XLSX)).filter(Boolean),
+});
 
 export const parseExcelWorkbook = async (file) => {
   const XLSX = await loadSheetJs();
@@ -107,12 +166,14 @@ export const parseExcelWorkbook = async (file) => {
   const skuSheets = workbook.SheetNames.filter(isSkuSheet);
   const records = [];
   const actions = [];
+  const diagnostics = [];
 
   skuSheets.forEach((sheetName) => {
     const worksheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: true, blankrows: false });
     const headerIndex = findHeaderRowIndex(rows);
     if (headerIndex < 0) return;
+    diagnostics.push(buildSheetDiagnostics(sheetName, rows, headerIndex, XLSX));
     const headers = rows[headerIndex];
     rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).forEach((row) => {
       const record = normalizeSheetRow(sheetName, headers, row, XLSX);
@@ -124,5 +185,5 @@ export const parseExcelWorkbook = async (file) => {
     });
   });
 
-  return { records, actions, skuSheets, skippedSheets, fieldLabels };
+  return { records, actions, skuSheets, skippedSheets, fieldLabels, diagnostics };
 };

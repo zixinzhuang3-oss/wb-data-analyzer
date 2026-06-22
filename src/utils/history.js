@@ -40,8 +40,13 @@ export const summarizeRecords = (records) => {
   const totalAdSpend = sum(records, 'adSpend');
   const totalProfit = sum(records, 'profit');
   const totalRevenue = sum(records, 'revenue');
-  const impressions = sum(records, 'impressions') || sum(records, 'adImpressions');
-  const clicks = sum(records, 'clicks') || sum(records, 'adClicks');
+  const impressions = sum(records, 'impressions');
+  const clicks = sum(records, 'clicks');
+  const addToCart = sum(records, 'addToCart');
+  const adImpressions = sum(records, 'adImpressions');
+  const adClicks = sum(records, 'adClicks');
+  const adAddToCart = sum(records, 'adAddToCart');
+  const adOrders = sum(records, 'adOrders');
   return {
     dateCount: new Set(records.map((record) => record.date).filter(Boolean)).size,
     skuCount: new Set(records.map((record) => record.sku).filter(Boolean)).size,
@@ -51,12 +56,23 @@ export const summarizeRecords = (records) => {
     totalRevenue,
     impressions,
     clicks,
+    addToCart,
+    adImpressions,
+    adClicks,
+    adAddToCart,
+    adOrders,
+    adCostPerOrder: safeDivide(totalAdSpend, adOrders),
+    adAvgClickCost: safeDivide(totalAdSpend, adClicks),
     margin: safeDivide(totalProfit, totalRevenue),
     adShare: safeDivide(totalAdSpend, totalRevenue),
     roi: safeDivide(totalRevenue, totalAdSpend),
     acos: safeDivide(totalAdSpend, totalRevenue),
     ctr: safeDivide(clicks, impressions),
-    cvr: safeDivide(totalOrders, clicks),
+    cvr: safeDivide(addToCart, clicks),
+    orderConversionRate: safeDivide(totalOrders, clicks),
+    adCtr: safeDivide(adClicks, adImpressions),
+    adClickAddToCartRate: safeDivide(adAddToCart, adClicks),
+    adStatus: records.some((record) => record.adStatus === '开启') ? '开启' : records.some((record) => record.adStatus === '关闭') ? '关闭' : records.length ? '广告关闭 / 无广告数据' : '无数据',
   };
 };
 
