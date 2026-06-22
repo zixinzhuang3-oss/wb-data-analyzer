@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { toIsoDate } from '../src/utils/excel.js';
 import { parseOperationActionText, normalizeAction, actionToSummary } from '../src/utils/actions.js';
 import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
+import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
 
 const XLSX = { SSF: { parse_date_code(value) { if (value === 46190) return { y: 2026, m: 6, d: 17 }; if (value === 46191) return { y: 2026, m: 6, d: 18 }; return null; } } };
 assert.equal(toIsoDate(46190, XLSX), '2026-06-17');
@@ -48,5 +49,41 @@ const actions = [parseOperationActionText(scenarios[5][1], '2026-06-18', 'ES035B
 const analysis = buildEffectAnalysis(records, actions, { date: '2026-06-18', sku: 'ES035BK' })[0];
 assert.ok(analysis.effects.some((item) => item.text.includes('CPC搜索、CPM搜索、CPM推荐')));
 assert.ok(analysis.recommendations.some((item) => item.reason.includes('CPC') || item.reason.includes('CPM')));
+
+const rangeRecords = [
+  { date: '2026-06-10', sku: 'ES035BK', uniqueKey: '2026-06-10__ES035BK', totalOrders: 1, adSpend: 10, adImpressions: 100, adClicks: 10, revenue: 100, profit: 10 },
+  { date: '2026-06-16', sku: 'ES035BK', uniqueKey: '2026-06-16__ES035BK', totalOrders: 2, adSpend: 20, adImpressions: 200, adClicks: 20, revenue: 200, profit: 20 },
+  { date: '2026-06-17', sku: 'ES035BK', uniqueKey: '2026-06-17__ES035BK', totalOrders: 3, adSpend: 30, adImpressions: 300, adClicks: 30, revenue: 300, profit: 30 },
+  { date: '2026-06-17', sku: 'ES040BK', uniqueKey: '2026-06-17__ES040BK', totalOrders: 4, adSpend: 40, adImpressions: 400, adClicks: 40, revenue: 400, profit: 40 },
+  { date: '2026-06-18', sku: 'ES035BK', uniqueKey: '2026-06-18__ES035BK', totalOrders: 5, adSpend: 50, adImpressions: 500, adClicks: 50, revenue: 500, profit: 50 },
+  { date: '2026-06-19', sku: 'ES035BK', uniqueKey: '2026-06-19__ES035BK', totalOrders: 6, adSpend: 60, adImpressions: 600, adClicks: 60, revenue: 600, profit: 60 },
+  { date: '2026-06-20', sku: 'ES035BK', uniqueKey: '2026-06-20__ES035BK', totalOrders: 7, adSpend: 70, adImpressions: 700, adClicks: 70, revenue: 700, profit: 70 },
+  { date: '2026-06-21', sku: 'ES035BK', uniqueKey: '2026-06-21__ES035BK', totalOrders: 8, adSpend: 80, adImpressions: 800, adClicks: 80, revenue: 800, profit: 80 },
+  { date: '2026-06-22', sku: 'ES035BK', uniqueKey: '2026-06-22__ES035BK', totalOrders: 9, adSpend: 90, adImpressions: 900, adClicks: 90, revenue: 900, profit: 90 },
+];
+
+const singleDay = buildComparison(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-17', sku: 'ES035BK' });
+assert.equal(singleDay.current.totalOrders, 3);
+assert.equal(singleDay.previousRange.startDate, '2026-06-16');
+assert.equal(singleDay.previousRange.endDate, '2026-06-16');
+assert.equal(singleDay.previous.totalOrders, 2);
+
+const sevenDays = buildComparison(rangeRecords, { startDate: '2026-06-16', endDate: '2026-06-22', sku: 'ES035BK' });
+assert.equal(sevenDays.previousRange.startDate, '2026-06-09');
+assert.equal(sevenDays.previousRange.endDate, '2026-06-15');
+assert.equal(sevenDays.previous.totalOrders, 1);
+
+const allSkuRows = filterRecords(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-17' });
+assert.equal(new Set(allSkuRows.map((row) => row.sku)).size, 2);
+
+const singleSkuRows = filterRecords(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-17', sku: 'ES040BK' });
+assert.equal(singleSkuRows.length, 1);
+assert.equal(singleSkuRows[0].sku, 'ES040BK');
+
+const noPrevious = buildComparison(rangeRecords, { startDate: '2026-06-09', endDate: '2026-06-09' });
+assert.equal(noPrevious.hasPreviousData, false);
+
+assert.deepEqual(resolveDateRange(rangeRecords, { startDate: '2026-06-21', endDate: '2026-06-17' }), { allDates: false, startDate: '2026-06-17', endDate: '2026-06-21' });
+assert.equal(filterRecords(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-17' }).reduce((sum, row) => sum + row.totalOrders, 0), 7);
 
 console.log('core tests passed');

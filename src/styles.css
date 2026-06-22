@@ -65,7 +65,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .error-text { background: #fff0ee; color: #9b1c1c; }
 .import-result { display: grid; gap: 8px; margin-top: 14px; padding: 16px; border-radius: 16px; border: 1px solid #e7edf8; background: #fbfcff; }
 .filter-row { margin-bottom: 18px; }
-.filter-row select { min-width: 190px; border: 1px solid #d8e0ee; border-radius: 14px; padding: 12px 14px; background: white; color: #22304a; font-weight: 700; }
+.filter-row select, .filter-row input { min-width: 190px; border: 1px solid #d8e0ee; border-radius: 14px; padding: 12px 14px; background: white; color: #22304a; font-weight: 700; }
+.quick-range-row { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+.quick-range-row button { padding: 9px 12px; font-size: 13px; }
+.period-line { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 16px; color: #25457d; }
+.period-line strong { border-radius: 14px; background: #edf3ff; padding: 10px 12px; }
+.comparison-grid { grid-template-columns: repeat(7, 1fr); }
+.comparison-card strong { font-size: 22px; }
 .record-list { display: grid; gap: 12px; max-height: 620px; overflow: auto; padding-right: 4px; }
 .record-card { display: grid; gap: 7px; border: 1px solid #e8edf7; background: #fbfcff; border-radius: 16px; padding: 14px; }
 .record-card strong { font-size: 18px; }
@@ -92,6 +98,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 @media (max-width: 1050px) { .action-form-grid { grid-template-columns: 1fr 1fr; } .wide-field { grid-column: span 2; } }
 @media (max-width: 720px) { .action-form-grid { grid-template-columns: 1fr; } .wide-field { grid-column: span 1; } }
 .strategy-board { border-color: #dbe8ff; }
+.strategy-context { margin: 0 0 16px !important; border-radius: 16px; background: #f1f6ff; border: 1px solid #dbe8ff; padding: 12px 14px; color: #25457d !important; }
 .recommendation-grid, .effect-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .recommendation-card, .effect-card { border: 1px solid #e8edf7; border-radius: 18px; padding: 16px; background: #fbfcff; display: grid; gap: 10px; }
 .recommendation-card.priority-高 { border-color: #ffc8c0; background: #fff7f6; }
