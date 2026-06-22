@@ -150,6 +150,42 @@ assert.equal(filterRecords(rangeRecords, buildQuickRange('today', '2026-06-23'))
 assert.equal(hasEffectiveDailyData({ date: '2026-07-19', sku: 'ES035BK', totalOrders: 0, adSpend: 0, revenue: 0, profit: 0, operationAction: '' }), false);
 assert.equal(hasEffectiveDailyData({ date: '2026-07-19', sku: 'ES035BK', totalOrders: 1, adSpend: 0, revenue: 0, profit: 0, operationAction: '' }), true);
 
+
+const noDataTodayAction = normalizeAction({ date: '2026-06-21', sku: 'ES030BK', cpcEnabled: '关闭', cpmEnabled: '关闭', source: '手动填写' });
+const noDataTodayAnalysis = buildEffectAnalysis([
+  { date: '2026-06-21', sku: 'ES030BK', uniqueKey: '2026-06-21__ES030BK', totalOrders: 2, adSpend: 0, revenue: 200, profit: 60, stock: 30 },
+  { date: '2026-06-22', sku: 'ES030BK', uniqueKey: '2026-06-22__ES030BK', totalOrders: 0, adSpend: 0, revenue: 0, profit: 0, hasValidBusinessData: false },
+], [noDataTodayAction], { date: '2026-06-22', sku: 'ES030BK' })[0];
+assert.equal(noDataTodayAnalysis.noValidData, true);
+assert.equal(noDataTodayAnalysis.actionMeta.found, true);
+assert.match(noDataTodayAnalysis.primaryRecommendation.reason, /当前日期暂无有效数据/);
+assert.equal(noDataTodayAnalysis.recommendations.some((item) => /恢复|暂停广告|加大预算|降低/.test(item.type + item.reason)), false);
+assert.equal(noDataTodayAnalysis.metrics.totalOrders.todayVsYesterday.rate, 0);
+assert.doesNotMatch(noDataTodayAnalysis.primaryRecommendation.reason, /下降 100|订单下降|恢复低预算|恢复小预算/);
+
+const missingTodayWithoutBlankRow = buildEffectAnalysis([
+  { date: '2026-06-21', sku: 'ES031BK', uniqueKey: '2026-06-21__ES031BK', totalOrders: 4, adSpend: 0, revenue: 400, profit: 80, stock: 30 },
+], [normalizeAction({ date: '2026-06-21', sku: 'ES031BK', cpcEnabled: '关闭', cpmEnabled: '关闭', source: '手动填写' })], { date: '2026-06-22', sku: 'ES031BK' })[0];
+assert.equal(missingTodayWithoutBlankRow.noValidData, true);
+assert.match(missingTodayWithoutBlankRow.primaryRecommendation.reason, /已找到上一日动作记录，但当前日期暂无有效数据/);
+assert.equal(missingTodayWithoutBlankRow.recommendations.some((item) => /恢复/.test(item.type + item.reason)), false);
+
+const realZeroOrderAnalysis = buildEffectAnalysis([
+  { date: '2026-06-21', sku: 'ES032BK', uniqueKey: '2026-06-21__ES032BK', totalOrders: 2, adSpend: 50, revenue: 200, profit: 20, stock: 30 },
+  { date: '2026-06-22', sku: 'ES032BK', uniqueKey: '2026-06-22__ES032BK', totalOrders: 0, adSpend: 0, revenue: 0, profit: 0, stock: 30, hasValidBusinessData: true },
+], [normalizeAction({ date: '2026-06-21', sku: 'ES032BK', cpcEnabled: '关闭', cpmEnabled: '关闭', source: '手动填写' })], { date: '2026-06-22', sku: 'ES032BK' })[0];
+assert.equal(realZeroOrderAnalysis.noValidData, undefined);
+assert.equal(realZeroOrderAnalysis.metrics.totalOrders.today, 0);
+assert.equal(realZeroOrderAnalysis.metrics.totalOrders.todayVsYesterday.rate, -1);
+
+const futureBlankRows = [
+  { date: '2026-06-21', sku: 'ES033BK', uniqueKey: '2026-06-21__ES033BK', totalOrders: 5, adSpend: 10, revenue: 500, profit: 50 },
+  { date: '2026-07-19', sku: 'ES033BK', uniqueKey: '2026-07-19__ES033BK', totalOrders: 0, adSpend: 0, revenue: 0, profit: 0, hasValidBusinessData: false },
+];
+assert.equal(filterRecords(futureBlankRows, { allDates: true }).length, 1);
+assert.equal(buildComparison(futureBlankRows, { allDates: true }).current.totalOrders, 5);
+assert.equal(buildEffectAnalysis(futureBlankRows, [], { date: '2026-07-19', sku: 'ES033BK' })[0].noValidData, true);
+
 const fixedRow = [];
 fixedRow[0] = '2026-06-17';
 fixedRow[11] = 20; // totalOrders via fallback header name below

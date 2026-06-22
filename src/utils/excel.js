@@ -135,17 +135,42 @@ const getFieldValue = (field, headerMap, row) => {
   return index >= 0 ? row[index] : '';
 };
 
-export const hasEffectiveDailyData = (record) => [...NUMERIC_FIELD_KEYS].some((key) => {
-  const value = Number(record[key]);
-  return Number.isFinite(value) && value !== 0;
-}) || Boolean(String(record.operationAction || '').trim());
+const BUSINESS_DATA_KEYS = ['totalOrders', 'revenue', 'impressions', 'clicks', 'addToCart', 'adSpend', 'adOrders', 'adImpressions', 'adClicks', 'adAddToCart', 'profit', 'profitCny', 'profitRub', 'stock', 'price', 'reviews', 'rating'];
+const POSITIVE_BUSINESS_KEYS = new Set(['totalOrders', 'revenue', 'impressions', 'clicks', 'addToCart', 'adSpend', 'adOrders', 'adImpressions', 'adClicks', 'adAddToCart']);
+const PRESENT_BUSINESS_KEYS = new Set(['stock', 'price', 'reviews', 'rating', 'profit', 'profitCny', 'profitRub']);
+
+const hasRawBusinessCell = (fieldKey, rawValue) => {
+  if (!BUSINESS_DATA_KEYS.includes(fieldKey) || isBlank(rawValue)) return false;
+  const value = toNumber(rawValue);
+  if (POSITIVE_BUSINESS_KEYS.has(fieldKey)) return value > 0;
+  if (PRESENT_BUSINESS_KEYS.has(fieldKey)) return Number.isFinite(value);
+  return false;
+};
+
+export const hasValidBusinessData = (record = {}) => {
+  if (typeof record.hasValidBusinessData === 'boolean') return record.hasValidBusinessData;
+  if (typeof record.__hasValidBusinessData === 'boolean') return record.__hasValidBusinessData;
+  return BUSINESS_DATA_KEYS.some((key) => {
+    const raw = record[key];
+    if (raw === undefined || raw === null || String(raw).trim?.() === '') return false;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return false;
+    if (POSITIVE_BUSINESS_KEYS.has(key)) return value > 0;
+    if (['stock', 'price', 'reviews', 'rating'].includes(key)) return true;
+    return value !== 0;
+  });
+};
+
+export const hasEffectiveDailyData = hasValidBusinessData;
 
 export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   const headerMap = buildHeaderMap(headers);
   const record = { sku: sheetName.trim(), sourceSheet: sheetName.trim() };
+  const rawBusinessFields = {};
   DAILY_FIELDS.forEach((field) => {
     if (field.key === 'sku') return;
     const value = getFieldValue(field, headerMap, row);
+    if (hasRawBusinessCell(field.key, value)) rawBusinessFields[field.key] = true;
     if (field.key === 'date') record.date = toIsoDate(value, XLSX);
     else if (NUMERIC_FIELD_KEYS.has(field.key)) record[field.key] = toNumber(value);
     else record[field.key] = String(value ?? '').trim();
@@ -161,6 +186,8 @@ export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   record.profitCny = Number(record.profit) || 0;
   record.profitRub = Math.round(record.profitCny * CNY_TO_RUB * 100) / 100;
   record.profit = record.profitCny;
+  record.hasValidBusinessData = Object.keys(rawBusinessFields).length > 0;
+  record.__hasValidBusinessData = record.hasValidBusinessData;
   record.adStatus = detectAdStatus(record, headers, row, headerMap);
   record.uniqueKey = `${record.date}__${record.sku}`;
   return record;
