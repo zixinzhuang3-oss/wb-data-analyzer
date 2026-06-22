@@ -6,6 +6,7 @@ import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
 import { addDays, buildQuickRange, formatDateInTimeZone, getTodayDate } from '../src/utils/date.js';
 import { formatPercent, formatRuble, formatYuan } from '../src/utils/analysis.js';
+import { CNY_TO_RUB, toProfitRub } from '../src/utils/currency.js';
 
 const XLSX = { SSF: { parse_date_code(value) { if (value === 46190) return { y: 2026, m: 6, d: 17 }; if (value === 46191) return { y: 2026, m: 6, d: 18 }; return null; } } };
 assert.equal(toIsoDate(46190, XLSX), '2026-06-17');
@@ -193,6 +194,10 @@ assert.doesNotMatch(formatRuble(fixedRecord.revenue), /¥/);
 assert.equal(formatYuan(67.27), '¥67.27');
 assert.equal(formatPercent(fixedRecord.adSpend / fixedRecord.revenue), '113.7%');
 assert.equal(Number((fixedRecord.revenue / fixedRecord.adSpend).toFixed(2)), 0.88);
+assert.equal(CNY_TO_RUB, 11.5);
+assert.equal(toProfitRub({ profitCny: 70.80 }), 814.2);
+assert.equal(formatRuble(toProfitRub({ profitCny: 70.80 })), '₽814.20');
+assert.equal(formatPercent(toProfitRub({ profitCny: 70.80 }) / 20853.92), '3.9%');
 
 const fixedCurrencyRow = [...fixedRow];
 fixedCurrencyRow[26] = '1,512.50 ₽';
@@ -240,11 +245,15 @@ assert.equal(trafficSummary.adCostPerOrder, 30);
 assert.equal(trafficSummary.adAvgClickCost, 0.4);
 assert.equal(trafficSummary.acos, 0.3);
 assert.equal(trafficSummary.roi, 10 / 3);
+assert.equal(trafficSummary.totalProfitCny, 30);
+assert.equal(trafficSummary.totalProfitRub, 345);
+assert.equal(trafficSummary.margin, trafficSummary.totalProfitRub / trafficSummary.totalRevenue);
 
 assert.equal(trafficSummary.totalRevenue, 400);
-assert.equal(formatRuble(trafficSummary.totalRevenue), '₽400');
-assert.equal(formatRuble(trafficSummary.totalAdSpend), '₽120');
-assert.equal(formatYuan(trafficSummary.totalProfit), '¥30.00');
+assert.equal(formatRuble(trafficSummary.totalRevenue), '₽400.00');
+assert.equal(formatRuble(trafficSummary.totalAdSpend), '₽120.00');
+assert.equal(formatRuble(trafficSummary.totalProfit), '₽345.00');
+assert.equal(formatYuan(trafficSummary.totalProfitCny), '¥30.00');
 assert.doesNotMatch(formatRuble(trafficSummary.totalRevenue), /¥/);
 assert.doesNotMatch(formatRuble(trafficSummary.totalAdSpend), /¥/);
 assert.equal(trafficSummary.acos, trafficSummary.totalAdSpend / trafficSummary.totalRevenue);
@@ -253,10 +262,11 @@ assert.equal(trafficSummary.roi, trafficSummary.totalRevenue / trafficSummary.to
 const mainSource = fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSource, /总销售额 ₽/);
 assert.match(mainSource, /总广告费 ₽/);
-assert.match(mainSource, /总利润 ¥/);
+assert.match(mainSource, /总利润 ₽/);
 assert.match(mainSource, /总销售额：\$\{formatRuble/);
 assert.match(mainSource, /总广告费：\$\{formatRuble/);
-assert.match(mainSource, /总利润：\$\{formatYuan/);
+assert.match(mainSource, /总利润：\$\{formatRuble/);
+assert.match(mainSource, /原始 \$\{formatYuan/);
 assert.doesNotMatch(mainSource, /总销售额（人民币|总广告费（人民币|总销售额 ¥|总广告费 ¥/);
 
 console.log('core tests passed');

@@ -1,3 +1,5 @@
+import { toProfitRub } from './currency.js';
+
 const DAY_MS = 86400000;
 
 const METRICS = {
@@ -30,7 +32,7 @@ const safeDivide = (a, b) => (b ? a / b : 0);
 const number = (value) => Number(value) || 0;
 const pct = (value) => `${((value || 0) * 100).toFixed(1)}%`;
 const signedPct = (value) => `${value >= 0 ? '+' : ''}${((value || 0) * 100).toFixed(1)}%`;
-const money = (value) => new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 0 }).format(value || 0);
+const money = (value) => new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(value || 0);
 
 const enrichRecord = (record) => {
   const revenue = number(record.revenue);
@@ -46,8 +48,9 @@ const enrichRecord = (record) => {
     impressions,
     clicks,
     adShare: number(record.adShare) || safeDivide(number(record.adOrders), totalOrders) || safeDivide(adSpend, revenue),
-    profit: number(record.profit),
-    margin: safeDivide(number(record.profit), revenue),
+    profit: toProfitRub(record),
+    profitRub: toProfitRub(record),
+    margin: safeDivide(toProfitRub(record), revenue),
     ctr: number(record.ctr) || safeDivide(clicks, impressions),
     cvr: number(record.conversionRate) || safeDivide(totalOrders, clicks),
     acos: safeDivide(adSpend, revenue),

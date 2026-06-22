@@ -144,7 +144,7 @@ export const analyzeBusiness = ({ salesRows = [], adsRows = [], linkRows = [] })
 export const formatYuan = (value) =>
   new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 }).format(value || 0);
 
-export const formatRuble = (value) => `₽${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value || 0)}`;
+export const formatRuble = (value) => `₽${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value || 0)}`;
 
 export const formatMoney = formatYuan;
 

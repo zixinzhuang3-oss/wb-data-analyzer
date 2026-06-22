@@ -68,4 +68,8 @@ export const isSkuSheet = (sheetName) => {
   return !isAuxiliarySheet(name) && SKU_SHEET_PATTERN.test(name);
 };
 
-export const fieldLabels = Object.fromEntries(DAILY_FIELDS.map((field) => [field.key, field.label]));
+export const fieldLabels = {
+  ...Object.fromEntries(DAILY_FIELDS.map((field) => [field.key, field.label])),
+  profitCny: '原始利润 ¥',
+  profitRub: '利润 ₽',
+};

@@ -1,7 +1,10 @@
 import { addDays } from './date.js';
+import { toProfitCny, toProfitRub } from './currency.js';
 
 const DAY_MS = 86400000;
 const sum = (rows, key) => rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
+const sumProfitCny = (rows) => rows.reduce((total, row) => total + toProfitCny(row), 0);
+const sumProfitRub = (rows) => rows.reduce((total, row) => total + toProfitRub(row), 0);
 const safeDivide = (a, b) => (b ? a / b : 0);
 const toDate = (date) => new Date(`${date}T00:00:00Z`);
 export { addDays };
@@ -38,7 +41,9 @@ export const filterRecords = (records, filters = {}) => {
 export const summarizeRecords = (records) => {
   const totalOrders = sum(records, 'totalOrders');
   const totalAdSpend = sum(records, 'adSpend');
-  const totalProfit = sum(records, 'profit');
+  const totalProfitCny = sumProfitCny(records);
+  const totalProfitRub = sumProfitRub(records);
+  const totalProfit = totalProfitRub;
   const totalRevenue = sum(records, 'revenue');
   const impressions = sum(records, 'impressions');
   const clicks = sum(records, 'clicks');
@@ -53,6 +58,8 @@ export const summarizeRecords = (records) => {
     totalOrders,
     totalAdSpend,
     totalProfit,
+    totalProfitCny,
+    totalProfitRub,
     totalRevenue,
     impressions,
     clicks,
@@ -63,7 +70,7 @@ export const summarizeRecords = (records) => {
     adOrders,
     adCostPerOrder: safeDivide(totalAdSpend, adOrders),
     adAvgClickCost: safeDivide(totalAdSpend, adClicks),
-    margin: safeDivide(totalProfit, totalRevenue),
+    margin: safeDivide(totalProfitRub, totalRevenue),
     adShare: safeDivide(totalAdSpend, totalRevenue),
     roi: safeDivide(totalRevenue, totalAdSpend),
     acos: safeDivide(totalAdSpend, totalRevenue),
@@ -96,6 +103,8 @@ export const summarizeByDate = (records) => {
     totalOrders: sum(rows, 'totalOrders'),
     totalRevenue: sum(rows, 'revenue'),
     totalAdSpend: sum(rows, 'adSpend'),
-    totalProfit: sum(rows, 'profit'),
+    totalProfit: sumProfitRub(rows),
+    totalProfitRub: sumProfitRub(rows),
+    totalProfitCny: sumProfitCny(rows),
   }));
 };
