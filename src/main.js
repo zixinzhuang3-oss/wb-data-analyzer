@@ -153,6 +153,7 @@ function renderHistoryCards(records) {
     <strong>${row.date}</strong>
     <span>SKU 数量：${row.skuCount}</span>
     <span>总订单：${formatNumber(row.totalOrders)}</span>
+    <span>总销售额：${formatRuble(row.totalRevenue)}</span>
     <span>总广告费：${formatRuble(row.totalAdSpend)}</span>
     <span>总利润：${formatYuan(row.totalProfit)}</span>
   </article>`).join('')}</div>`;
@@ -262,9 +263,9 @@ function renderSkuDetail(record, action) {
     <h3>${html(record.date)} · ${html(record.sku)}</h3>
     <div class="detail-grid">
       <div><span>总订单</span><strong>${formatNumber(record.totalOrders)}</strong></div>
-      <div><span>广告费（卢布 ₽）</span><strong>${formatRuble(record.adSpend)}</strong></div>
-      <div><span>销售额（卢布 ₽）</span><strong>${formatRuble(record.revenue)}</strong></div>
-      <div><span>利润（人民币 ¥）</span><strong>${formatYuan(record.profit)}</strong></div>
+      <div><span>广告费 ₽</span><strong>${formatRuble(record.adSpend)}</strong></div>
+      <div><span>销售额 ₽</span><strong>${formatRuble(record.revenue)}</strong></div>
+      <div><span>利润 ¥</span><strong>${formatYuan(record.profit)}</strong></div>
       <div><span>整体广告状态</span><strong>${html(action?.adStatus || record.adStatus || '-')}</strong></div>
       <div><span>CPC 状态</span><strong>${html(action?.cpcEnabled || '-')}</strong></div>
       <div><span>CPC 搜索出价</span><strong>${html(action?.cpcSearchBid ?? '-')}</strong></div>
@@ -334,8 +335,8 @@ function renderSuggestionHistory(analyses, dates, skus) {
 
 const metricConfig = [
   ['总订单', 'totalOrders', formatNumber],
-  ['总销售额（卢布 ₽）', 'totalRevenue', formatRuble],
-  ['总利润（人民币 ¥）', 'totalProfit', formatYuan],
+  ['总销售额 ₽', 'totalRevenue', formatRuble],
+  ['总利润 ¥', 'totalProfit', formatYuan],
   ['利润率', 'margin', formatPercent],
   ['ROI', 'roi', formatNumber],
   ['ACOS', 'acos', formatPercent],
@@ -352,10 +353,10 @@ const metricConfig = [
   ['总广告加购', 'adAddToCart', formatNumber],
   ['广告点击转加购率', 'adClickAddToCartRate', formatPercent],
   ['广告订单', 'adOrders', formatNumber],
-  ['总广告费（卢布 ₽）', 'totalAdSpend', formatRuble],
+  ['总广告费 ₽', 'totalAdSpend', formatRuble],
   ['广告费占比', 'adShare', formatPercent],
-  ['每单费用（卢布 ₽）', 'adCostPerOrder', formatRuble],
-  ['广告平均点击费（卢布 ₽）', 'adAvgClickCost', formatRuble],
+  ['每单费用 ₽', 'adCostPerOrder', formatRuble],
+  ['广告平均点击费 ₽', 'adAvgClickCost', formatRuble],
   ['SKU 数量', 'skuCount', formatNumber],
   ['日期数量', 'dateCount', formatNumber],
 ];

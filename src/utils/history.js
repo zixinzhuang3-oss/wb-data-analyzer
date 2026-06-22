@@ -94,6 +94,7 @@ export const summarizeByDate = (records) => {
     date,
     skuCount: new Set(rows.map((row) => row.sku)).size,
     totalOrders: sum(rows, 'totalOrders'),
+    totalRevenue: sum(rows, 'revenue'),
     totalAdSpend: sum(rows, 'adSpend'),
     totalProfit: sum(rows, 'profit'),
   }));
