@@ -1,5 +1,6 @@
 import { addDays } from './date.js';
 import { toProfitCny, toProfitRub } from './currency.js';
+import { hasValidBusinessData } from './excel.js';
 
 const DAY_MS = 86400000;
 const sum = (rows, key) => rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
@@ -32,6 +33,7 @@ export const getPreviousRange = ({ startDate, endDate, allDates }) => {
 export const filterRecords = (records, filters = {}) => {
   const range = resolveDateRange(records, filters);
   return records.filter((record) => {
+    if (!hasValidBusinessData(record)) return false;
     const dateMatched = range.allDates || (!range.startDate && !range.endDate) || (record.date >= range.startDate && record.date <= range.endDate);
     const skuMatched = !filters.sku || record.sku === filters.sku;
     return dateMatched && skuMatched;
@@ -93,7 +95,7 @@ export const buildComparison = (records, filters = {}) => {
 
 export const summarizeByDate = (records) => {
   const grouped = new Map();
-  records.forEach((record) => {
+  records.filter(hasValidBusinessData).forEach((record) => {
     if (!grouped.has(record.date)) grouped.set(record.date, []);
     grouped.get(record.date).push(record);
   });

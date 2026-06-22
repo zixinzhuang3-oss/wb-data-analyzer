@@ -288,22 +288,25 @@ function renderSkuDetail(record, action) {
 
 function renderStrategyBoard(analyses, comparison) {
   if (!analyses.length) return '<section class="panel"><h2>明日策略建议看板</h2><p class="empty-state">导入历史数据后将自动生成明日策略建议。</p></section>';
-  const context = comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatRuble(deltaInfo(comparison.current.totalProfitRub, comparison.previous.totalProfitRub).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
+  const allNoValidData = analyses.every((item) => item.noValidData);
+  const context = allNoValidData ? '当前时间段暂无有效数据，请先导入数据。' : comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatRuble(deltaInfo(comparison.current.totalProfitRub, comparison.previous.totalProfitRub).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
   return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、上一同长度时间段和每日动作，判断动作是否有效，并输出明日广告与运营建议。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
     <div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(item.date)}</span></div>
-    <h3>${html(item.primaryRecommendation.type)}</h3>
-    <p>${html(item.primaryRecommendation.reason)}</p>
+    <h3>${html(item.noValidData ? '暂无当前日期数据' : item.primaryRecommendation.type)}</h3>
+    <p>${html(item.noValidData ? '暂无当前日期数据，无法判断。' : item.primaryRecommendation.reason)}</p>
   </article>`).join('')}</div></section>`;
 }
 
 function renderEffectCards(analyses) {
   if (!analyses.length) return '';
   return `<section class="panel"><div class="panel-heading"><span class="panel-icon">↗</span><div><h2>动作效果分析卡片</h2><p>严格按“昨天动作 → 今天结果”读取 IndexedDB 中分析日期前一天 + 当前 SKU 的动作记录。</p></div><button id="refresh-effect-analysis" type="button">刷新动作分析</button></div><div class="effect-grid">${analyses.map((item) => {
-    const effectText = item.effects.length ? item.effects.map((effect) => `${effect.level}：${effect.text}`).join(' ') : '暂无明确动作效果，建议继续观察。';
+    const effectText = item.noValidData ? (item.actionMeta?.found ? '已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。' : '当前时间段暂无有效数据，无法生成策略建议。') : item.effects.length ? item.effects.map((effect) => `${effect.level}：${effect.text}`).join(' ') : '暂无明确动作效果，建议继续观察。';
     const actionSummary = item.actionMeta?.found ? actionToSummary(item.latestAction) : '未找到上一日动作记录，无法判断动作效果';
-    const resultText = item.actionMeta?.found
-      ? `昨天动作 → 今天结果：${actionSummary}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`
-      : `未找到上一日动作记录，无法判断动作效果；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`;
+    const resultText = item.noValidData
+      ? (item.actionMeta?.found ? '已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。' : '当前时间段暂无有效数据，无法生成策略建议。')
+      : item.actionMeta?.found
+        ? `昨天动作 → 今天结果：${actionSummary}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`
+        : `未找到上一日动作记录，无法判断动作效果；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`;
     return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(actionSummary)}</span></div>
       <div class="mini-metrics action-meta">
         <span>分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
@@ -314,12 +317,12 @@ function renderEffectCards(analyses) {
       </div>
       <p>${html(resultText)}</p>
       <p>${html(effectText)}</p>
-      <div class="mini-metrics">
+      ${item.noValidData ? '<div class="mini-metrics"><span>暂无当前日期数据，无法判断。</span></div>' : `<div class="mini-metrics">
         <span>订单 ${formatNumber(item.metrics.totalOrders.today)} / 昨日 ${formatNumber(item.metrics.totalOrders.yesterday)}</span>
         <span>广告费 ${formatRuble(item.metrics.adSpend.today)} / 近3天 ${formatRuble(item.metrics.adSpend.last3Avg)}</span>
         <span>利润 ${formatRuble(item.metrics.profit.today)} / 动作前后 ${formatRuble(item.metrics.profit.actionWindowDelta.value)}</span>
         <span>ROI ${formatNumber(item.metrics.roi.today)} · ACOS ${formatPercent(item.metrics.acos.today)}</span>
-      </div>
+      </div>`}
     </article>`;
   }).join('')}</div></section>`;
 }

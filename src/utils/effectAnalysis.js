@@ -1,4 +1,5 @@
 import { toProfitRub } from './currency.js';
+import { hasValidBusinessData } from './excel.js';
 
 const DAY_MS = 86400000;
 
@@ -86,6 +87,9 @@ const buildMetricSnapshot = (todayRecord, yesterdayRecord, last3, last7, before3
 };
 
 const actionForDate = (actionsByKey, date, sku) => actionsByKey.get(`${date}__${sku}`);
+const noDataRecommendation = (sku, hasPreviousAction) => makeRecommendation('观察1天', hasPreviousAction
+  ? `${sku} 已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。`
+  : `${sku} 当前时间段暂无有效数据，无法生成策略建议。`, '低');
 
 const latestBidText = (action) => {
   if (!action) return '';
@@ -238,25 +242,50 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
 export const buildEffectAnalysis = (records = [], actions = [], filters = {}) => {
   const actionsByKey = new Map(actions.map((action) => [action.uniqueKey, action]));
   const bySku = new Map();
+  const candidateSkus = new Set();
   records.forEach((record) => {
     if (!record.date || !record.sku) return;
     if (filters.sku && record.sku !== filters.sku) return;
+    candidateSkus.add(record.sku);
+    if (!hasValidBusinessData(record)) return;
     if (!bySku.has(record.sku)) bySku.set(record.sku, []);
     bySku.get(record.sku).push(record);
   });
+  actions.forEach((action) => {
+    if (action.sku && (!filters.sku || action.sku === filters.sku)) candidateSkus.add(action.sku);
+  });
 
-  const analyses = [...bySku.entries()].map(([sku, skuRecords]) => {
-    const sorted = skuRecords.sort((a, b) => a.date.localeCompare(b.date));
+  const analyses = [...candidateSkus].map((sku) => {
+    const sorted = (bySku.get(sku) || []).sort((a, b) => a.date.localeCompare(b.date));
     const inRange = sorted.filter((record) => (filters.allDates || !filters.startDate || record.date >= filters.startDate) && (filters.allDates || !filters.endDate || record.date <= filters.endDate));
     const targetDate = filters.endDate || filters.date || inRange.at(-1)?.date || sorted.at(-1)?.date;
-    const today = inRange.find((record) => record.date === targetDate) || inRange.at(-1) || (!filters.startDate && !filters.endDate && !filters.date ? sorted.at(-1) : null);
-    if (!today) return null;
+    const exactToday = targetDate ? inRange.find((record) => record.date === targetDate) : null;
+    const today = exactToday || (!targetDate ? inRange.at(-1) || sorted.at(-1) : null);
+    const requiredActionDate = targetDate ? addDays(targetDate, -1) : '';
+    const missingCurrentData = !today || (targetDate && !exactToday);
+    const latestActionForMissing = requiredActionDate ? actionForDate(actionsByKey, requiredActionDate, sku) || null : null;
+    if (missingCurrentData) {
+      const recommendation = noDataRecommendation(sku, Boolean(latestActionForMissing));
+      return {
+        sku,
+        date: targetDate || '',
+        uniqueKey: targetDate ? `${targetDate}__${sku}` : '',
+        latestAction: latestActionForMissing,
+        previousAction: null,
+        metrics: buildMetricSnapshot({}, {}, {}, {}, {}, {}),
+        noValidData: true,
+        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || requiredActionDate, sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), noValidData: true },
+        primaryRecommendation: recommendation,
+        recommendations: [recommendation],
+        risks: [],
+        effects: [],
+      };
+    }
     const todayIndex = sorted.findIndex((record) => record.uniqueKey === today.uniqueKey);
     const yesterdayDate = addDays(today.date, -1);
     const yesterday = sorted.find((record) => record.date === yesterdayDate) || sorted[todayIndex - 1] || {};
     const last3Rows = sorted.slice(Math.max(0, todayIndex - 2), todayIndex + 1);
     const last7Rows = sorted.slice(Math.max(0, todayIndex - 6), todayIndex + 1);
-    const requiredActionDate = yesterdayDate;
     const latestAction = actionForDate(actionsByKey, requiredActionDate, sku) || null;
     const actionDate = requiredActionDate;
     const before3Rows = sorted.filter((record) => record.date < actionDate).slice(-3);
