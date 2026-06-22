@@ -1,6 +1,6 @@
 import { parseExcelWorkbook } from './utils/excel.js';
 import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup, saveAction, saveRecords } from './utils/storage.js';
-import { filterRecords, getDateOptions, getSkuOptions, summarizeByDate, summarizeRecords } from './utils/history.js';
+import { buildPeriodComparison, buildPeriodSummaryText, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatMoney, formatPercent } from './utils/analysis.js';
 import { ACTION_FIELDS, actionToSummary, applyAdRules, createEmptyAction, normalizeAction } from './utils/actions.js';
@@ -11,7 +11,7 @@ const state = {
   records: [],
   actions: [],
   actionDraft: createEmptyAction(),
-  filters: { date: '', sku: '' },
+  filters: { startDate: '', endDate: '', sku: '', quickRange: '最近 7 天' },
   lastImport: null,
   selectedDetailKey: '',
   status: '请上传包含 SKU sheet 的 Excel 文件，系统会把“日期 + SKU”作为唯一键保存到 IndexedDB。',
@@ -107,6 +107,7 @@ async function handleBackupExport() {
 }
 
 const renderOptions = (options, current, placeholder) => [`<option value="">${placeholder}</option>`, ...options.map((option) => `<option value="${html(option)}" ${option === current ? 'selected' : ''}>${html(option)}</option>`)].join('');
+const QUICK_RANGES = ['今天', '昨天', '最近 3 天', '最近 7 天', '最近 14 天', '最近 30 天', '自定义时间段'];
 
 function renderImportSummary() {
   if (!state.lastImport) return '<p class="empty-state">尚未导入 Excel。本阶段会自动跳过 wb利润定价表、ozon利润定价表、Sheet10 等辅助 sheet。</p>';
@@ -130,6 +131,75 @@ function renderHistoryCards(records) {
     <span>总广告费：${formatMoney(row.totalAdSpend)}</span>
     <span>总利润：${formatMoney(row.totalProfit)}</span>
   </article>`).join('')}</div>`;
+}
+
+
+const formatByType = (value, type) => {
+  if (type === 'money') return formatMoney(value);
+  if (type === 'percent') return formatPercent(value);
+  return formatNumber(value);
+};
+
+const formatDelta = (value, type) => {
+  const prefix = Number(value) > 0 ? '+' : '';
+  if (type === 'money') return `${prefix}${formatMoney(value)}`;
+  if (type === 'percent') return `${prefix}${formatPercent(value)}`;
+  return `${prefix}${formatNumber(value)}`;
+};
+
+function applyQuickRange(range) {
+  state.filters.quickRange = range;
+  if (range === '自定义时间段') { render(); return; }
+  const dates = getDateOptions(state.records).sort();
+  const latest = dates.at(-1) || new Date().toISOString().slice(0, 10);
+  const endDate = range === '昨天' ? addDateForUi(latest, -1) : latest;
+  const lengthMap = { 今天: 1, 昨天: 1, '最近 3 天': 3, '最近 7 天': 7, '最近 14 天': 14, '最近 30 天': 30 };
+  const days = lengthMap[range] || 7;
+  state.filters.endDate = endDate;
+  state.filters.startDate = addDateForUi(endDate, -(days - 1));
+  render();
+}
+
+function addDateForUi(date, days) {
+  const [year, month, day] = String(date || '').split('-').map(Number);
+  if (!year || !month || !day) return '';
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function ensureDefaultDateRange(dates) {
+  if (state.filters.startDate || state.filters.endDate || !dates.length) return;
+  const sorted = [...dates].sort();
+  const latest = sorted.at(-1);
+  state.filters.endDate = latest;
+  state.filters.startDate = addDateForUi(latest, -6);
+}
+
+function renderMetricCard(metric, hasComparison) {
+  const qualityLabel = { good: '利好', bad: '需关注', risk: '库存风险', neutral: '中性' }[metric.quality] || '中性';
+  return `<div class="metric-card trend-${metric.quality}">
+    <span>${html(metric.label)}</span>
+    <strong>${formatByType(metric.current, metric.type)}</strong>
+    <small>${hasComparison ? `上期 ${formatByType(metric.previous, metric.type)} · ${metric.trend} ${formatDelta(metric.delta, metric.type)} · ${formatPercent(metric.percent)}` : '上期：无对比数据'}</small>
+    <em>${qualityLabel}</em>
+  </div>`;
+}
+
+function renderPeriodSummary(comparison) {
+  return `<section class="period-summary"><h3>区间对比总结</h3><p>${html(buildPeriodSummaryText(comparison))}</p></section>`;
+}
+
+function renderSkuComparisonTable(comparison) {
+  if (state.filters.sku) return '';
+  if (!comparison.skuRows.length) return '<section class="period-summary"><h3>SKU 对比明细</h3><p class="empty-state">当前时间段暂无 SKU 对比数据。</p></section>';
+  const rows = comparison.skuRows.map((row) => `<tr>
+    <td>${html(row.sku)}</td><td>${formatNumber(row.currentOrders)}</td><td>${formatNumber(row.previousOrders)}</td><td>${formatDelta(row.orderDelta, 'number')}</td>
+    <td>${formatMoney(row.currentAdSpend)}</td><td>${formatMoney(row.previousAdSpend)}</td><td>${formatDelta(row.adSpendDelta, 'money')}</td>
+    <td>${formatMoney(row.currentProfit)}</td><td>${formatMoney(row.previousProfit)}</td><td>${formatDelta(row.profitDelta, 'money')}</td>
+    <td>${formatNumber(row.currentRoi)}</td><td>${formatNumber(row.previousRoi)}</td><td>${formatPercent(row.currentAcos)}</td><td>${formatPercent(row.previousAcos)}</td><td>${html(row.judgment)}</td>
+  </tr>`).join('');
+  return `<section class="period-summary"><h3>SKU 对比明细</h3><div class="table-wrap"><table><thead><tr><th>SKU</th><th>当前订单</th><th>上期订单</th><th>订单变化</th><th>当前广告费</th><th>上期广告费</th><th>广告费变化</th><th>当前利润</th><th>上期利润</th><th>利润变化</th><th>当前 ROI</th><th>上期 ROI</th><th>当前 ACOS</th><th>上期 ACOS</th><th>系统判断</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
 function renderTable(records) {
@@ -189,13 +259,11 @@ async function handleActionDelete(uniqueKey = getCurrentActionKey()) {
 }
 
 function actionFieldVisible(field, draft) {
-  if (['cpcSearchBid'].includes(field.key)) return draft.adMode === 'CPC';
-  if (field.key === 'cpmBidType') return draft.adMode === 'CPM';
-  if (field.key === 'cpmSearchBid') return draft.adMode === 'CPM' && draft.cpmBidType === '手动出价' && ['搜索', '搜索+推荐'].includes(draft.adPosition);
-  if (field.key === 'cpmRecommendBid') return draft.adMode === 'CPM' && draft.cpmBidType === '手动出价' && ['推荐', '搜索+推荐'].includes(draft.adPosition);
-  if (field.key === 'cpmUnifiedBid') return draft.adMode === 'CPM' && draft.cpmBidType === '统一出价';
-  if (field.key === 'dailyBudget') return ['CPC', 'CPM'].includes(draft.adMode);
-  if (field.key === 'adPosition') return ['CPC', 'CPM'].includes(draft.adMode);
+  if (['cpcSearchBid', 'cpcDailyBudget'].includes(field.key)) return draft.cpcEnabled === '开启';
+  if (['cpmPosition', 'cpmBidType', 'cpmDailyBudget'].includes(field.key)) return draft.cpmEnabled === '开启';
+  if (field.key === 'cpmSearchBid') return draft.cpmEnabled === '开启' && draft.cpmBidType === '手动出价' && ['仅搜索', '搜索+推荐'].includes(draft.cpmPosition);
+  if (field.key === 'cpmRecommendBid') return draft.cpmEnabled === '开启' && draft.cpmBidType === '手动出价' && ['仅推荐', '搜索+推荐'].includes(draft.cpmPosition);
+  if (field.key === 'cpmUnifiedBid') return draft.cpmEnabled === '开启' && draft.cpmBidType === '统一出价';
   return true;
 }
 
@@ -209,20 +277,21 @@ function renderActionField(field) {
   if (field.type === 'number') {
     return `<label class="form-field"><span>${field.label}</span><input data-action-field="${field.key}" type="number" step="0.01" value="${html(value)}" /></label>`;
   }
-  const disabled = field.key === 'adPosition' && draft.adMode === 'CPC' ? 'disabled' : '';
+  const disabled = field.disabled ? 'disabled' : '';
   return `<label class="form-field"><span>${field.label}</span><select data-action-field="${field.key}" ${disabled}><option value="">请选择</option>${field.options.map((option) => `<option value="${html(option)}" ${option === value ? 'selected' : ''}>${html(option)}</option>`).join('')}</select></label>`;
 }
 
 function renderActionModule(dates, skus) {
   const currentKey = getCurrentActionKey();
   const existing = actionMap().get(currentKey);
+  const groups = ['基础字段', 'CPC 模块', 'CPM 模块'].map((group) => `<fieldset class="action-fieldset"><legend>${group}</legend><div class="action-form-grid">${ACTION_FIELDS.filter((field) => field.group === group).map(renderActionField).join('')}</div></fieldset>`).join('');
   return `<section class="panel action-panel">
-    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录当天运营动作和广告策略调整；Excel B 列原文会保留，结构化动作以此表单为准。</p></div></div>
+    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。</p></div></div>
     <div class="action-form-grid">
       <label class="form-field"><span>日期</span><select id="action-date"><option value="">选择日期</option>${dates.map((date) => `<option value="${html(date)}" ${date === state.actionDraft.date ? 'selected' : ''}>${html(date)}</option>`).join('')}</select></label>
       <label class="form-field"><span>SKU</span><select id="action-sku"><option value="">选择 SKU</option>${skus.map((sku) => `<option value="${html(sku)}" ${sku === state.actionDraft.sku ? 'selected' : ''}>${html(sku)}</option>`).join('')}</select></label>
-      ${ACTION_FIELDS.map(renderActionField).join('')}
     </div>
+    ${groups}
     <div class="action-row form-actions">
       <button id="save-action" type="button">${existing ? '更新动作记录' : '保存动作记录'}</button>
       <button id="delete-action" type="button" ${existing ? '' : 'disabled'}>删除动作记录</button>
@@ -240,15 +309,17 @@ function renderSkuDetail(record, action) {
       <div><span>广告费</span><strong>${formatMoney(record.adSpend)}</strong></div>
       <div><span>销售额</span><strong>${formatMoney(record.revenue)}</strong></div>
       <div><span>利润</span><strong>${formatMoney(record.profit)}</strong></div>
-      <div><span>广告状态</span><strong>${html(action?.adStatus || record.adStatus || '-')}</strong></div>
-      <div><span>广告模式</span><strong>${html(action?.adMode || '-')}</strong></div>
-      <div><span>广告位置</span><strong>${html(action?.adPosition || '-')}</strong></div>
-      <div><span>出价方式</span><strong>${html(action?.cpmBidType || '-')}</strong></div>
-      <div><span>CPC搜索出价</span><strong>${html(action?.cpcSearchBid ?? '-')}</strong></div>
-      <div><span>CPM搜索出价</span><strong>${html(action?.cpmSearchBid ?? '-')}</strong></div>
-      <div><span>CPM推荐出价</span><strong>${html(action?.cpmRecommendBid ?? '-')}</strong></div>
-      <div><span>统一出价</span><strong>${html(action?.cpmUnifiedBid ?? '-')}</strong></div>
-      <div><span>每日预算</span><strong>${html(action?.dailyBudget ?? '-')}</strong></div>
+      <div><span>整体广告状态</span><strong>${html(action?.adStatus || record.adStatus || '-')}</strong></div>
+      <div><span>CPC 状态</span><strong>${html(action?.cpcEnabled || '-')}</strong></div>
+      <div><span>CPC 搜索出价</span><strong>${html(action?.cpcSearchBid ?? '-')}</strong></div>
+      <div><span>CPC 预算</span><strong>${html(action?.cpcDailyBudget ?? '-')}</strong></div>
+      <div><span>CPM 状态</span><strong>${html(action?.cpmEnabled || '-')}</strong></div>
+      <div><span>CPM 投放位置</span><strong>${html(action?.cpmPosition || '-')}</strong></div>
+      <div><span>CPM 出价方式</span><strong>${html(action?.cpmBidType || '-')}</strong></div>
+      <div><span>CPM 搜索出价</span><strong>${html(action?.cpmSearchBid ?? '-')}</strong></div>
+      <div><span>CPM 推荐出价</span><strong>${html(action?.cpmRecommendBid ?? '-')}</strong></div>
+      <div><span>CPM 统一出价</span><strong>${html(action?.cpmUnifiedBid ?? '-')}</strong></div>
+      <div><span>CPM 预算</span><strong>${html(action?.cpmDailyBudget ?? '-')}</strong></div>
     </div>
     <section class="detail-section"><h4>Excel 运营动作原文</h4><p>${html(record.operationAction || 'Excel 中未填写运营动作原文')}</p></section>
     <section class="detail-section"><h4>系统结构化动作</h4><p>${html(actionToSummary(action))}</p></section>
@@ -296,14 +367,15 @@ function renderSuggestionHistory(analyses, dates, skus) {
 }
 
 function render() {
-  const filtered = filterRecords(state.records, state.filters);
-  const totals = summarizeRecords(filtered);
   const dates = getDateOptions(state.records);
+  ensureDefaultDateRange(dates);
+  const filtered = filterRecords(state.records, state.filters);
+  const periodComparison = buildPeriodComparison(state.records, state.filters);
   const skus = getSkuOptions(state.records);
   const actions = actionMap();
   const selectedRecord = state.records.find((record) => record.uniqueKey === state.selectedDetailKey) || filtered[0];
   const selectedAction = selectedRecord ? actions.get(selectedRecord.uniqueKey) : null;
-  const effectAnalyses = buildEffectAnalysis(state.records, state.actions, state.filters);
+  const effectAnalyses = buildEffectAnalysis(state.records, state.actions, state.filters, periodComparison);
 
   root.innerHTML = `<main class="app-shell">
     <section class="hero">
@@ -326,19 +398,21 @@ function render() {
       ${renderImportSummary()}
     </section>
 
-    <section class="panel">
-      <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>按日期和 SKU 查看已导入历史数据，所有数据保存在当前浏览器 IndexedDB 中。</p></div></div>
-      <div class="filter-row">
-        <select id="date-filter">${renderOptions(dates, state.filters.date, '全部日期')}</select>
-        <select id="sku-filter">${renderOptions(skus, state.filters.sku, '全部 SKU')}</select>
+    <section class="panel summary-panel">
+      <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>按任意时间段和 SKU 查看汇总，并自动对比上一个同长度时间段。</p></div></div>
+      <div class="filter-row period-filter-row">
+        <label class="form-field"><span>开始日期</span><input id="start-date-filter" type="date" value="${html(state.filters.startDate)}" /></label>
+        <label class="form-field"><span>结束日期</span><input id="end-date-filter" type="date" value="${html(state.filters.endDate)}" /></label>
+        <label class="form-field"><span>快捷时间段</span><select id="quick-range-filter">${QUICK_RANGES.map((option) => `<option value="${html(option)}" ${option === state.filters.quickRange ? 'selected' : ''}>${html(option)}</option>`).join('')}</select></label>
+        <label class="form-field"><span>SKU 筛选</span><select id="sku-filter">${renderOptions(skus, state.filters.sku, '全部 SKU')}</select></label>
       </div>
-      <div class="metrics-grid">
-        <div class="metric-card"><span>已选日期数</span><strong>${totals.dateCount}</strong><small>历史总记录 ${state.records.length} 行</small></div>
-        <div class="metric-card"><span>SKU 数量</span><strong>${totals.skuCount}</strong><small>当前筛选范围</small></div>
-        <div class="metric-card"><span>总订单</span><strong>${formatNumber(totals.totalOrders)}</strong><small>销售额 ${formatMoney(totals.totalRevenue)}</small></div>
-        <div class="metric-card"><span>总广告费</span><strong>${formatMoney(totals.totalAdSpend)}</strong><small>广告投入</small></div>
-        <div class="metric-card"><span>总利润</span><strong>${formatMoney(totals.totalProfit)}</strong><small>当前筛选范围</small></div>
+      <div class="period-range-row">
+        <div><span>当前时间段</span><strong>${html(periodComparison.currentRange.startDate || '-')} 至 ${html(periodComparison.currentRange.endDate || '-')}</strong></div>
+        <div><span>对比时间段</span><strong>${periodComparison.hasComparison ? `${html(periodComparison.previousRange.startDate)} 至 ${html(periodComparison.previousRange.endDate)}` : '无对比数据'}</strong></div>
       </div>
+      <div class="metrics-grid extended-metrics">${periodComparison.metrics.map((metric) => renderMetricCard(metric, periodComparison.hasComparison)).join('')}</div>
+      ${renderPeriodSummary(periodComparison)}
+      ${renderSkuComparisonTable(periodComparison)}
     </section>
 
     ${renderActionModule(dates, skus)}
@@ -356,7 +430,9 @@ function render() {
   document.getElementById('excel-upload')?.addEventListener('change', (event) => handleExcelUpload(event.target.files?.[0]));
   document.getElementById('backup-upload')?.addEventListener('change', (event) => handleBackupImport(event.target.files?.[0]));
   document.getElementById('export-backup')?.addEventListener('click', handleBackupExport);
-  document.getElementById('date-filter')?.addEventListener('change', (event) => { state.filters.date = event.target.value; render(); });
+  document.getElementById('start-date-filter')?.addEventListener('change', (event) => { state.filters.startDate = event.target.value; state.filters.quickRange = '自定义时间段'; render(); });
+  document.getElementById('end-date-filter')?.addEventListener('change', (event) => { state.filters.endDate = event.target.value; state.filters.quickRange = '自定义时间段'; render(); });
+  document.getElementById('quick-range-filter')?.addEventListener('change', (event) => applyQuickRange(event.target.value));
   document.getElementById('sku-filter')?.addEventListener('change', (event) => { state.filters.sku = event.target.value; render(); });
   document.getElementById('action-date')?.addEventListener('change', (event) => { state.actionDraft.date = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.getElementById('action-sku')?.addEventListener('change', (event) => { state.actionDraft.sku = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
