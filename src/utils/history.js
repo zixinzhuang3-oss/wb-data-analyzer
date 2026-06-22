@@ -30,10 +30,11 @@ export const normalizeDateRange = (records = [], filters = {}) => {
   const dates = getDateOptions(records).sort();
   const fallbackEnd = dates.at(-1) || '';
   const fallbackStart = dates[0] || fallbackEnd;
-  let startDate = filters.startDate || filters.date || fallbackStart;
-  let endDate = filters.endDate || filters.date || fallbackEnd;
+  const isAllDates = filters.quickRange === '全部日期' || filters.allDates;
+  let startDate = isAllDates ? fallbackStart : (filters.startDate || fallbackEnd);
+  let endDate = isAllDates ? fallbackEnd : (filters.endDate || startDate || fallbackEnd);
   if (startDate && endDate && startDate > endDate) [startDate, endDate] = [endDate, startDate];
-  return { startDate, endDate };
+  return { startDate, endDate, isAllDates };
 };
 
 export const getPreviousDateRange = (startDate, endDate) => {
@@ -80,8 +81,6 @@ export const summarizeRecords = (records) => {
 };
 
 export const METRIC_DEFINITIONS = [
-  { key: 'dateCount', label: '日期数', type: 'number', direction: 'neutral' },
-  { key: 'skuCount', label: 'SKU 数量', type: 'number', direction: 'neutral' },
   { key: 'totalOrders', label: '总订单', type: 'number', direction: 'positive' },
   { key: 'totalRevenue', label: '总销售额', type: 'money', direction: 'positive' },
   { key: 'totalAdSpend', label: '总广告费', type: 'money', direction: 'cost' },
@@ -94,7 +93,6 @@ export const METRIC_DEFINITIONS = [
   { key: 'totalClicks', label: '总点击', type: 'number', direction: 'neutral' },
   { key: 'ctr', label: 'CTR', type: 'percent', direction: 'positive' },
   { key: 'cvr', label: 'CVR', type: 'percent', direction: 'positive' },
-  { key: 'totalStock', label: '总库存', type: 'number', direction: 'stock' },
 ];
 
 export const compareMetric = (current, previous, definition, currentSummary = {}, previousSummary = {}) => {
@@ -117,7 +115,7 @@ export const compareMetric = (current, previous, definition, currentSummary = {}
 
 export const buildPeriodComparison = (records = [], filters = {}) => {
   const currentRange = normalizeDateRange(records, filters);
-  const previousRange = getPreviousDateRange(currentRange.startDate, currentRange.endDate);
+  const previousRange = currentRange.isAllDates ? { startDate: '', endDate: '', dayCount: 0 } : getPreviousDateRange(currentRange.startDate, currentRange.endDate);
   const withSku = (range) => records.filter((record) => {
     const dateMatched = (!range.startDate || record.date >= range.startDate) && (!range.endDate || record.date <= range.endDate);
     const skuMatched = !filters.sku || record.sku === filters.sku;
@@ -136,7 +134,7 @@ export const buildPeriodComparison = (records = [], filters = {}) => {
     previousRecords,
     currentSummary,
     previousSummary,
-    hasComparison: previousRecords.length > 0,
+    hasComparison: !currentRange.isAllDates && previousRecords.length > 0,
     metrics,
     skuRows: buildSkuComparison(records, currentRange, previousRange),
   };
@@ -186,6 +184,7 @@ export function buildSkuComparison(records = [], currentRange = {}, previousRang
 export const buildPeriodSummaryText = (comparison) => {
   const { currentRange, previousRange, currentSummary: current, previousSummary: previous, hasComparison } = comparison;
   const prefix = `当前时间段 ${currentRange.startDate || '-'} 至 ${currentRange.endDate || '-'}`;
+  if (currentRange.isAllDates) return `${prefix}，全部日期暂无上期对比。建议结合 SKU 明细定位长期趋势。`;
   if (!hasComparison) return `${prefix}，上一时间段 ${previousRange.startDate || '-'} 至 ${previousRange.endDate || '-'} 无对比数据。建议先积累完整历史后再判断趋势。`;
   const orderPct = previous.totalOrders ? (current.totalOrders - previous.totalOrders) / Math.abs(previous.totalOrders) : 0;
   const spendPct = previous.totalAdSpend ? (current.totalAdSpend - previous.totalAdSpend) / Math.abs(previous.totalAdSpend) : 0;

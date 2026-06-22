@@ -101,6 +101,17 @@ const june17Rows = filterRecords(rangeRecords, { startDate: '2026-06-17', endDat
 assert.equal(june17Rows.length, 2);
 assert.equal(buildPeriodComparison(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-17' }).currentSummary.totalOrders, 10);
 
+const june17To21 = buildPeriodComparison(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-21' });
+assert.equal(june17To21.currentSummary.totalOrders, 42);
+assert.equal(june17To21.currentRecords.length, 7);
+assert.equal(june17To21.previousRange.startDate, '2026-06-12');
+assert.equal(june17To21.previousRange.endDate, '2026-06-16');
+
+const allDatesComparison = buildPeriodComparison(rangeRecords, { quickRange: '全部日期' });
+assert.equal(allDatesComparison.currentRange.startDate, '2026-06-08');
+assert.equal(allDatesComparison.currentRange.endDate, '2026-06-21');
+assert.equal(allDatesComparison.hasComparison, false);
+
 const periodLinked = buildEffectAnalysis(rangeRecords, [], { startDate: '2026-06-15', endDate: '2026-06-21', sku: 'ES100BK' }, singleSkuComparison)[0];
 assert.ok(periodLinked.recommendations.some((item) => item.reason.includes('当前选择时间段')));
 

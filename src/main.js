@@ -11,7 +11,7 @@ const state = {
   records: [],
   actions: [],
   actionDraft: createEmptyAction(),
-  filters: { startDate: '', endDate: '', sku: '', quickRange: '最近 7 天' },
+  filters: { startDate: '', endDate: '', sku: '', quickRange: '今天' },
   lastImport: null,
   selectedDetailKey: '',
   status: '请上传包含 SKU sheet 的 Excel 文件，系统会把“日期 + SKU”作为唯一键保存到 IndexedDB。',
@@ -107,7 +107,7 @@ async function handleBackupExport() {
 }
 
 const renderOptions = (options, current, placeholder) => [`<option value="">${placeholder}</option>`, ...options.map((option) => `<option value="${html(option)}" ${option === current ? 'selected' : ''}>${html(option)}</option>`)].join('');
-const QUICK_RANGES = ['今天', '昨天', '最近 3 天', '最近 7 天', '最近 14 天', '最近 30 天', '自定义时间段'];
+const QUICK_RANGES = ['今天', '昨天', '最近 3 天', '最近 7 天', '最近 14 天', '最近 30 天', '全部日期'];
 
 function renderImportSummary() {
   if (!state.lastImport) return '<p class="empty-state">尚未导入 Excel。本阶段会自动跳过 wb利润定价表、ozon利润定价表、Sheet10 等辅助 sheet。</p>';
@@ -149,9 +149,14 @@ const formatDelta = (value, type) => {
 
 function applyQuickRange(range) {
   state.filters.quickRange = range;
-  if (range === '自定义时间段') { render(); return; }
   const dates = getDateOptions(state.records).sort();
   const latest = dates.at(-1) || new Date().toISOString().slice(0, 10);
+  if (range === '全部日期') {
+    state.filters.startDate = dates[0] || latest;
+    state.filters.endDate = latest;
+    render();
+    return;
+  }
   const endDate = range === '昨天' ? addDateForUi(latest, -1) : latest;
   const lengthMap = { 今天: 1, 昨天: 1, '最近 3 天': 3, '最近 7 天': 7, '最近 14 天': 14, '最近 30 天': 30 };
   const days = lengthMap[range] || 7;
@@ -173,7 +178,7 @@ function ensureDefaultDateRange(dates) {
   const sorted = [...dates].sort();
   const latest = sorted.at(-1);
   state.filters.endDate = latest;
-  state.filters.startDate = addDateForUi(latest, -6);
+  state.filters.startDate = latest;
 }
 
 function renderMetricCard(metric, hasComparison) {
@@ -403,12 +408,12 @@ function render() {
       <div class="filter-row period-filter-row">
         <label class="form-field"><span>开始日期</span><input id="start-date-filter" type="date" value="${html(state.filters.startDate)}" /></label>
         <label class="form-field"><span>结束日期</span><input id="end-date-filter" type="date" value="${html(state.filters.endDate)}" /></label>
-        <label class="form-field"><span>快捷时间段</span><select id="quick-range-filter">${QUICK_RANGES.map((option) => `<option value="${html(option)}" ${option === state.filters.quickRange ? 'selected' : ''}>${html(option)}</option>`).join('')}</select></label>
+        <div class="quick-range-buttons"><span>快捷时间段</span>${QUICK_RANGES.map((option) => `<button type="button" class="quick-range-button ${option === state.filters.quickRange ? 'active' : ''}" data-quick-range="${html(option)}">${html(option)}</button>`).join('')}</div>
         <label class="form-field"><span>SKU 筛选</span><select id="sku-filter">${renderOptions(skus, state.filters.sku, '全部 SKU')}</select></label>
       </div>
       <div class="period-range-row">
         <div><span>当前时间段</span><strong>${html(periodComparison.currentRange.startDate || '-')} 至 ${html(periodComparison.currentRange.endDate || '-')}</strong></div>
-        <div><span>对比时间段</span><strong>${periodComparison.hasComparison ? `${html(periodComparison.previousRange.startDate)} 至 ${html(periodComparison.previousRange.endDate)}` : '无对比数据'}</strong></div>
+        <div><span>对比时间段</span><strong>${periodComparison.currentRange.isAllDates ? '全部日期暂无上期对比' : (periodComparison.hasComparison ? `${html(periodComparison.previousRange.startDate)} 至 ${html(periodComparison.previousRange.endDate)}` : '无对比数据')}</strong></div>
       </div>
       <div class="metrics-grid extended-metrics">${periodComparison.metrics.map((metric) => renderMetricCard(metric, periodComparison.hasComparison)).join('')}</div>
       ${renderPeriodSummary(periodComparison)}
@@ -432,7 +437,7 @@ function render() {
   document.getElementById('export-backup')?.addEventListener('click', handleBackupExport);
   document.getElementById('start-date-filter')?.addEventListener('change', (event) => { state.filters.startDate = event.target.value; state.filters.quickRange = '自定义时间段'; render(); });
   document.getElementById('end-date-filter')?.addEventListener('change', (event) => { state.filters.endDate = event.target.value; state.filters.quickRange = '自定义时间段'; render(); });
-  document.getElementById('quick-range-filter')?.addEventListener('change', (event) => applyQuickRange(event.target.value));
+  document.querySelectorAll('[data-quick-range]').forEach((button) => button.addEventListener('click', (event) => applyQuickRange(event.currentTarget.dataset.quickRange)));
   document.getElementById('sku-filter')?.addEventListener('change', (event) => { state.filters.sku = event.target.value; render(); });
   document.getElementById('action-date')?.addEventListener('change', (event) => { state.actionDraft.date = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.getElementById('action-sku')?.addEventListener('change', (event) => { state.actionDraft.sku = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
