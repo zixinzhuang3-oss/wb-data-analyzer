@@ -1,10 +1,11 @@
 import { parseExcelWorkbook } from './utils/excel.js';
 import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup, saveAction, saveRecords } from './utils/storage.js';
-import { addDays, buildComparison, filterRecords, getDateOptions, getLatestDate, getSkuOptions, summarizeByDate } from './utils/history.js';
+import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatMoney, formatPercent } from './utils/analysis.js';
 import { ACTION_FIELDS, actionToSummary, applyAdRules, createEmptyAction, normalizeAction } from './utils/actions.js';
 import { buildEffectAnalysis, metricLabels } from './utils/effectAnalysis.js';
+import { buildQuickRange, getTodayDate } from './utils/date.js';
 
 const root = document.getElementById('root');
 const state = {
@@ -12,6 +13,8 @@ const state = {
   actions: [],
   actionDraft: createEmptyAction(),
   filters: { startDate: '', endDate: '', allDates: false, sku: '' },
+  today: { date: '', source: '浏览器本地时间', timeZone: 'Asia/Shanghai' },
+  defaultRangeApplied: false,
   lastImport: null,
   selectedDetailKey: '',
   status: '请上传包含 SKU sheet 的 Excel 文件，系统会把“日期 + SKU”作为唯一键保存到 IndexedDB。',
@@ -65,6 +68,7 @@ async function handleExcelUpload(file) {
     await saveRecords(result.records);
     if (result.actions?.length) await Promise.all(result.actions.map(saveAction));
     await refreshRecords();
+    applyDefaultQuickRange();
     state.lastImport = {
       fileName: file.name,
       savedCount: result.records.length,
@@ -90,6 +94,7 @@ async function handleBackupImport(file) {
     const backup = JSON.parse(await file.text());
     const result = await importBackup(backup);
     await refreshRecords();
+    applyDefaultQuickRange();
     state.status = `备份导入完成：恢复 ${result.records} 条历史记录、${result.actions} 条动作记录。`; 
   } catch (error) {
     state.status = `备份导入失败：${error.message || error}`;
@@ -133,7 +138,7 @@ function renderHistoryCards(records) {
 }
 
 function renderTable(records) {
-  if (!records.length) return '<p class="empty-state">当前筛选条件下没有历史数据。</p>';
+  if (!records.length) return '<p class="empty-state">当前时间段无数据</p>';
   const actions = actionMap();
   const header = `<th>详情/动作</th>${displayFields.map((key) => `<th>${fieldLabels[key]}</th>`).join('')}<th>结构化动作</th>`;
   const rows = records.map((record) => {
@@ -322,8 +327,24 @@ const deltaInfo = (current, previous) => {
 
 const rangeText = (range) => range?.allDates ? '全部日期' : `${range.startDate || '-'} 至 ${range.endDate || '-'}`;
 
+function applyDefaultQuickRange() {
+  if (!state.today.date) return;
+  const nextRange = buildQuickRange('7', state.today.date);
+  state.filters = { ...state.filters, ...nextRange };
+  state.defaultRangeApplied = true;
+}
+
+function renderDateContext(comparison) {
+  return `<div class="date-context">
+    <strong>当前日期基准：${html(state.today.date || '-')}</strong>
+    <strong>日期来源：${html(state.today.source || '浏览器本地时间')}</strong>
+    <strong>当前时间段：${html(rangeText(comparison.currentRange))}</strong>
+    <strong>对比时间段：${comparison.previousRange ? html(rangeText(comparison.previousRange)) : '全部日期暂无上期对比'}</strong>
+  </div>`;
+}
+
 function renderComparisonMetrics(comparison) {
-  return `<div class="period-line"><strong>当前时间段：${html(rangeText(comparison.currentRange))}</strong><strong>对比时间段：${comparison.previousRange ? html(rangeText(comparison.previousRange)) : '全部日期暂无上期对比'}</strong></div>
+  return `${renderDateContext(comparison)}
   <div class="metrics-grid comparison-grid">${metricConfig.map(([label, key, formatter]) => {
     const current = comparison.current[key];
     const previous = comparison.previous[key];
@@ -387,11 +408,7 @@ function renderIntervalSummary(comparison) {
 }
 
 function render() {
-  if (state.records.length && !state.filters.startDate && !state.filters.endDate && !state.filters.allDates) {
-    const latestDate = getLatestDate(state.records);
-    state.filters.startDate = latestDate;
-    state.filters.endDate = latestDate;
-  }
+  if (!state.defaultRangeApplied && state.today.date && !state.filters.startDate && !state.filters.endDate && !state.filters.allDates) applyDefaultQuickRange();
   const filtered = filterRecords(state.records, state.filters);
   const comparison = buildComparison(state.records, state.filters);
   const dates = getDateOptions(state.records);
@@ -423,7 +440,7 @@ function render() {
     </section>
 
     <section class="panel">
-      <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>按日期和 SKU 查看已导入历史数据，所有数据保存在当前浏览器 IndexedDB 中。</p></div></div>
+      <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>快捷时间段基于真实当前日期（优先网络时间，失败后使用浏览器本地时间），不会使用 Excel 最大日期作为今天。</p></div></div>
       <div class="filter-row">
         <label class="form-field"><span>开始日期</span><input id="start-date-filter" type="date" value="${html(state.filters.startDate)}" /></label>
         <label class="form-field"><span>结束日期</span><input id="end-date-filter" type="date" value="${html(state.filters.endDate)}" /></label>
@@ -462,20 +479,9 @@ function render() {
   document.getElementById('end-date-filter')?.addEventListener('change', (event) => { state.filters.endDate = event.target.value; state.filters.allDates = false; render(); });
   document.getElementById('sku-filter')?.addEventListener('change', (event) => { state.filters.sku = event.target.value; render(); });
   document.querySelectorAll('[data-range-preset]').forEach((button) => button.addEventListener('click', (event) => {
-    const latest = getLatestDate(state.records);
     const preset = event.target.dataset.rangePreset;
-    state.filters.allDates = preset === 'all';
-    if (preset === 'all') {
-      state.filters.startDate = '';
-      state.filters.endDate = '';
-    } else if (preset === 'yesterday') {
-      state.filters.startDate = addDays(latest, -1);
-      state.filters.endDate = addDays(latest, -1);
-    } else {
-      const days = preset === 'today' ? 1 : Number(preset);
-      state.filters.endDate = latest;
-      state.filters.startDate = addDays(latest, -(days - 1));
-    }
+    state.filters = { ...state.filters, ...buildQuickRange(preset, state.today.date) };
+    state.defaultRangeApplied = true;
     render();
   }));
   document.getElementById('action-date')?.addEventListener('change', (event) => { state.actionDraft.date = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
@@ -494,7 +500,11 @@ function render() {
   }));
 }
 
-refreshRecords().then(render).catch((error) => {
-  state.status = `IndexedDB 初始化失败：${error.message || error}`;
+Promise.all([refreshRecords(), getTodayDate()]).then(([, today]) => {
+  state.today = today;
+  applyDefaultQuickRange();
+  render();
+}).catch((error) => {
+  state.status = `初始化失败：${error.message || error}`;
   render();
 });

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { toIsoDate } from '../src/utils/excel.js';
+import { hasEffectiveDailyData, toIsoDate } from '../src/utils/excel.js';
 import { parseOperationActionText, normalizeAction, actionToSummary } from '../src/utils/actions.js';
 import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
+import { addDays, buildQuickRange, formatDateInTimeZone, getTodayDate } from '../src/utils/date.js';
 
 const XLSX = { SSF: { parse_date_code(value) { if (value === 46190) return { y: 2026, m: 6, d: 17 }; if (value === 46191) return { y: 2026, m: 6, d: 18 }; return null; } } };
 assert.equal(toIsoDate(46190, XLSX), '2026-06-17');
@@ -10,6 +11,22 @@ assert.equal(toIsoDate(46191, XLSX), '2026-06-18');
 assert.equal(toIsoDate(new Date(2026, 5, 17), XLSX), '2026-06-17');
 assert.equal(toIsoDate('2026/06/17', XLSX), '2026-06-17');
 assert.match(toIsoDate('6月17日', XLSX), /^\d{4}-06-17$/);
+
+const realToday = '2026-06-22';
+assert.deepEqual(buildQuickRange('today', realToday), { allDates: false, startDate: '2026-06-22', endDate: '2026-06-22' });
+assert.deepEqual(buildQuickRange('yesterday', realToday), { allDates: false, startDate: '2026-06-21', endDate: '2026-06-21' });
+assert.deepEqual(buildQuickRange('3', realToday), { allDates: false, startDate: '2026-06-20', endDate: '2026-06-22' });
+assert.deepEqual(buildQuickRange('7', realToday), { allDates: false, startDate: '2026-06-16', endDate: '2026-06-22' });
+assert.deepEqual(buildQuickRange('14', realToday), { allDates: false, startDate: '2026-06-09', endDate: '2026-06-22' });
+assert.deepEqual(buildQuickRange('30', realToday), { allDates: false, startDate: '2026-05-24', endDate: '2026-06-22' });
+assert.equal(addDays('2026-06-22', -6), '2026-06-16');
+assert.equal(addDays('2026-03-01', -1), '2026-02-28');
+assert.equal(formatDateInTimeZone(new Date('2026-06-21T16:30:00.000Z'), 'Asia/Shanghai'), '2026-06-22');
+const networkToday = await getTodayDate({ timeZone: 'Asia/Shanghai', fetchImpl: async () => ({ ok: true, json: async () => ({ datetime: '2026-06-21T16:30:00.000Z' }) }) });
+assert.deepEqual(networkToday, { date: '2026-06-22', source: '网络时间', timeZone: 'Asia/Shanghai' });
+const fallbackToday = await getTodayDate({ timeZone: 'Asia/Shanghai', fetchImpl: async () => { throw new Error('offline'); } });
+assert.match(fallbackToday.date, /^\d{4}-\d{2}-\d{2}$/);
+assert.equal(fallbackToday.source, '浏览器本地时间');
 
 const scenarios = [
   ['只开 CPC 搜索', 'CPC=开启；CPC搜索出价=25；CPC预算=300；CPM=关闭；预算动作=保持预算；备注=CPC搜索保量', { adStatus: '仅 CPC', cpcEnabled: '开启', cpmEnabled: '关闭', cpcSearchBid: 25, cpcDailyBudget: 300 }],
@@ -60,6 +77,7 @@ const rangeRecords = [
   { date: '2026-06-20', sku: 'ES035BK', uniqueKey: '2026-06-20__ES035BK', totalOrders: 7, adSpend: 70, adImpressions: 700, adClicks: 70, revenue: 700, profit: 70 },
   { date: '2026-06-21', sku: 'ES035BK', uniqueKey: '2026-06-21__ES035BK', totalOrders: 8, adSpend: 80, adImpressions: 800, adClicks: 80, revenue: 800, profit: 80 },
   { date: '2026-06-22', sku: 'ES035BK', uniqueKey: '2026-06-22__ES035BK', totalOrders: 9, adSpend: 90, adImpressions: 900, adClicks: 90, revenue: 900, profit: 90 },
+  { date: '2026-07-19', sku: 'ES035BK', uniqueKey: '2026-07-19__ES035BK', totalOrders: 99, adSpend: 990, adImpressions: 9900, adClicks: 990, revenue: 9900, profit: 990 },
 ];
 
 const singleDay = buildComparison(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-17', sku: 'ES035BK' });
@@ -68,7 +86,13 @@ assert.equal(singleDay.previousRange.startDate, '2026-06-16');
 assert.equal(singleDay.previousRange.endDate, '2026-06-16');
 assert.equal(singleDay.previous.totalOrders, 2);
 
-const sevenDays = buildComparison(rangeRecords, { startDate: '2026-06-16', endDate: '2026-06-22', sku: 'ES035BK' });
+const quickTodayRows = filterRecords(rangeRecords, buildQuickRange('today', realToday));
+assert.equal(quickTodayRows.some((row) => row.date === '2026-07-19'), false);
+assert.equal(quickTodayRows.reduce((sum, row) => sum + row.totalOrders, 0), 9);
+
+const realSevenDayRange = buildQuickRange('7', realToday);
+assert.deepEqual(realSevenDayRange, { allDates: false, startDate: '2026-06-16', endDate: '2026-06-22' });
+const sevenDays = buildComparison(rangeRecords, { ...realSevenDayRange, sku: 'ES035BK' });
 assert.equal(sevenDays.previousRange.startDate, '2026-06-09');
 assert.equal(sevenDays.previousRange.endDate, '2026-06-15');
 assert.equal(sevenDays.previous.totalOrders, 1);
@@ -85,5 +109,8 @@ assert.equal(noPrevious.hasPreviousData, false);
 
 assert.deepEqual(resolveDateRange(rangeRecords, { startDate: '2026-06-21', endDate: '2026-06-17' }), { allDates: false, startDate: '2026-06-17', endDate: '2026-06-21' });
 assert.equal(filterRecords(rangeRecords, { startDate: '2026-06-17', endDate: '2026-06-17' }).reduce((sum, row) => sum + row.totalOrders, 0), 7);
+assert.equal(filterRecords(rangeRecords, buildQuickRange('today', '2026-06-23')).length, 0);
+assert.equal(hasEffectiveDailyData({ date: '2026-07-19', sku: 'ES035BK', totalOrders: 0, adSpend: 0, revenue: 0, profit: 0, operationAction: '' }), false);
+assert.equal(hasEffectiveDailyData({ date: '2026-07-19', sku: 'ES035BK', totalOrders: 1, adSpend: 0, revenue: 0, profit: 0, operationAction: '' }), true);
 
 console.log('core tests passed');
