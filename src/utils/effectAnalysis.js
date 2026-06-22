@@ -253,14 +253,16 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const yesterday = sorted.find((record) => record.date === yesterdayDate) || sorted[todayIndex - 1] || {};
     const last3Rows = sorted.slice(Math.max(0, todayIndex - 2), todayIndex + 1);
     const last7Rows = sorted.slice(Math.max(0, todayIndex - 6), todayIndex + 1);
-    const skuActions = actions.filter((action) => action.sku === sku && action.date <= today.date).sort((a, b) => a.date.localeCompare(b.date));
-    const latestAction = actionForDate(actionsByKey, today.date, sku) || skuActions.at(-1);
-    const actionDate = latestAction?.date || today.date;
+    const requiredActionDate = yesterdayDate;
+    const latestAction = actionForDate(actionsByKey, requiredActionDate, sku) || null;
+    const actionDate = requiredActionDate;
     const before3Rows = sorted.filter((record) => record.date < actionDate).slice(-3);
     const after3Rows = sorted.filter((record) => record.date >= actionDate).slice(0, 3);
     const previousAction = actions.filter((action) => action.sku === sku && action.date < actionDate).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
     const metrics = buildMetricSnapshot(today, yesterday, averageRecords(last3Rows), averageRecords(last7Rows), averageRecords(before3Rows), averageRecords(after3Rows));
-    const ruleResult = analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) });
+    const ruleResult = latestAction
+      ? analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) })
+      : { recommendations: [makeRecommendation('观察1天', `${sku} 未找到上一日动作记录，无法判断动作效果。`, '低')], risks: [], effects: [] };
 
     return {
       sku,
@@ -269,6 +271,15 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
       latestAction,
       previousAction,
       metrics,
+      actionMeta: {
+        analysisDate: today.date,
+        comparisonDate: yesterdayDate,
+        requiredActionDate,
+        usedActionDate: latestAction?.date || requiredActionDate,
+        sku,
+        source: latestAction?.source || 'IndexedDB 动作记录',
+        found: Boolean(latestAction),
+      },
       primaryRecommendation: ruleResult.recommendations[0],
       recommendations: ruleResult.recommendations,
       risks: ruleResult.risks,

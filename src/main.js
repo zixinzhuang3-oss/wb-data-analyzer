@@ -124,6 +124,12 @@ async function handleBackupExport() {
   render();
 }
 
+async function handleEffectRefresh() {
+  await refreshRecords();
+  state.status = '已从 IndexedDB 刷新动作分析数据。';
+  render();
+}
+
 const renderOptions = (options, current, placeholder) => [`<option value="">${placeholder}</option>`, ...options.map((option) => `<option value="${html(option)}" ${option === current ? 'selected' : ''}>${html(option)}</option>`)].join('');
 
 function renderImportSummary() {
@@ -287,11 +293,20 @@ function renderStrategyBoard(analyses, comparison) {
 
 function renderEffectCards(analyses) {
   if (!analyses.length) return '';
-  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">↗</span><div><h2>动作效果分析卡片</h2><p>对比今天 vs 昨天、近 3 天/7 天均值，以及动作前 3 天 vs 动作后 3 天。</p></div></div><div class="effect-grid">${analyses.map((item) => {
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">↗</span><div><h2>动作效果分析卡片</h2><p>严格按“昨天动作 → 今天结果”读取 IndexedDB 中分析日期前一天 + 当前 SKU 的动作记录。</p></div><button id="refresh-effect-analysis" type="button">刷新动作分析</button></div><div class="effect-grid">${analyses.map((item) => {
     const effectText = item.effects.length ? item.effects.map((effect) => `${effect.level}：${effect.text}`).join(' ') : '暂无明确动作效果，建议继续观察。';
-    const yesterdayAction = item.previousAction || item.latestAction;
-    const resultText = `昨天动作 → 今天结果：${actionToSummary(yesterdayAction)}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatMoney(item.metrics.adSpend.today)}，利润 ${formatMoney(item.metrics.profit.today)}。`;
-    return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(actionToSummary(item.latestAction))}</span></div>
+    const actionSummary = item.actionMeta?.found ? actionToSummary(item.latestAction) : '未找到上一日动作记录，无法判断动作效果';
+    const resultText = item.actionMeta?.found
+      ? `昨天动作 → 今天结果：${actionSummary}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatMoney(item.metrics.adSpend.today)}，利润 ${formatMoney(item.metrics.profit.today)}。`
+      : `未找到上一日动作记录，无法判断动作效果；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatMoney(item.metrics.adSpend.today)}，利润 ${formatMoney(item.metrics.profit.today)}。`;
+    return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(actionSummary)}</span></div>
+      <div class="mini-metrics action-meta">
+        <span>分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
+        <span>对比日期：${html(item.actionMeta?.comparisonDate || '-')}</span>
+        <span>使用的动作记录日期：${html(item.actionMeta?.usedActionDate || '-')}</span>
+        <span>使用的 SKU：${html(item.actionMeta?.sku || item.sku)}</span>
+        <span>动作记录来源：${html(item.actionMeta?.found ? item.actionMeta.source : '未找到 IndexedDB 动作记录')}</span>
+      </div>
       <p>${html(resultText)}</p>
       <p>${html(effectText)}</p>
       <div class="mini-metrics">
@@ -500,6 +515,7 @@ function render() {
   document.getElementById('excel-upload')?.addEventListener('change', (event) => handleExcelUpload(event.target.files?.[0]));
   document.getElementById('backup-upload')?.addEventListener('change', (event) => handleBackupImport(event.target.files?.[0]));
   document.getElementById('export-backup')?.addEventListener('click', handleBackupExport);
+  document.getElementById('refresh-effect-analysis')?.addEventListener('click', handleEffectRefresh);
   document.getElementById('start-date-filter')?.addEventListener('change', (event) => { state.filters.startDate = event.target.value; state.filters.allDates = false; render(); });
   document.getElementById('end-date-filter')?.addEventListener('change', (event) => { state.filters.endDate = event.target.value; state.filters.allDates = false; render(); });
   document.getElementById('sku-filter')?.addEventListener('change', (event) => { state.filters.sku = event.target.value; render(); });

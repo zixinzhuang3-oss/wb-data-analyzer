@@ -62,10 +62,38 @@ const records = [
   { date: '2026-06-17', sku: 'ES035BK', uniqueKey: '2026-06-17__ES035BK', totalOrders: 10, adSpend: 200, adImpressions: 10000, adClicks: 300, revenue: 1000, profit: 300, stock: 50 },
   { date: '2026-06-18', sku: 'ES035BK', uniqueKey: '2026-06-18__ES035BK', totalOrders: 10, adSpend: 260, adImpressions: 18000, adClicks: 250, revenue: 1100, profit: 360, stock: 50 },
 ];
-const actions = [parseOperationActionText(scenarios[5][1], '2026-06-18', 'ES035BK')];
+const actions = [parseOperationActionText(scenarios[5][1], '2026-06-17', 'ES035BK')];
 const analysis = buildEffectAnalysis(records, actions, { date: '2026-06-18', sku: 'ES035BK' })[0];
+assert.equal(analysis.actionMeta.analysisDate, '2026-06-18');
+assert.equal(analysis.actionMeta.comparisonDate, '2026-06-17');
+assert.equal(analysis.actionMeta.requiredActionDate, '2026-06-17');
+assert.equal(analysis.actionMeta.usedActionDate, '2026-06-17');
+assert.equal(analysis.actionMeta.sku, 'ES035BK');
+assert.equal(analysis.actionMeta.found, true);
 assert.ok(analysis.effects.some((item) => item.text.includes('CPC搜索、CPM搜索、CPM推荐')));
 assert.ok(analysis.recommendations.some((item) => item.reason.includes('CPC') || item.reason.includes('CPM')));
+
+
+
+const noAdPreviousAction = normalizeAction({ date: '2026-06-21', sku: 'ES030BK', cpcEnabled: '关闭', cpmEnabled: '关闭', source: '手动填写' });
+const noAdAnalysis = buildEffectAnalysis([
+  { date: '2026-06-21', sku: 'ES030BK', uniqueKey: '2026-06-21__ES030BK', totalOrders: 2, adSpend: 0, adImpressions: 0, adClicks: 0, revenue: 200, profit: 60, stock: 30 },
+  { date: '2026-06-22', sku: 'ES030BK', uniqueKey: '2026-06-22__ES030BK', totalOrders: 3, adSpend: 0, adImpressions: 0, adClicks: 0, revenue: 300, profit: 90, stock: 30 },
+], [noAdPreviousAction], { date: '2026-06-22', sku: 'ES030BK' })[0];
+assert.equal(noAdAnalysis.latestAction.adStatus, '无广告');
+assert.equal(noAdAnalysis.latestAction.cpcEnabled, '关闭');
+assert.equal(noAdAnalysis.latestAction.cpmEnabled, '关闭');
+assert.doesNotMatch(actionToSummary(noAdAnalysis.latestAction), /CPC搜索出价：10/);
+
+const staleActionOnly = normalizeAction({ date: '2026-06-20', sku: 'ES030BK', cpcEnabled: '开启', cpcSearchBid: 10, cpmEnabled: '关闭', source: '手动填写' });
+const missingPreviousActionAnalysis = buildEffectAnalysis([
+  { date: '2026-06-21', sku: 'ES030BK', uniqueKey: '2026-06-21__ES030BK', totalOrders: 2, adSpend: 0, revenue: 200, profit: 60 },
+  { date: '2026-06-22', sku: 'ES030BK', uniqueKey: '2026-06-22__ES030BK', totalOrders: 3, adSpend: 0, revenue: 300, profit: 90 },
+], [staleActionOnly], { date: '2026-06-22', sku: 'ES030BK' })[0];
+assert.equal(missingPreviousActionAnalysis.latestAction, null);
+assert.equal(missingPreviousActionAnalysis.actionMeta.requiredActionDate, '2026-06-21');
+assert.equal(missingPreviousActionAnalysis.actionMeta.found, false);
+assert.match(missingPreviousActionAnalysis.primaryRecommendation.reason, /未找到上一日动作记录，无法判断动作效果/);
 
 const rangeRecords = [
   { date: '2026-06-10', sku: 'ES035BK', uniqueKey: '2026-06-10__ES035BK', totalOrders: 1, adSpend: 10, adImpressions: 100, adClicks: 10, revenue: 100, profit: 10 },
