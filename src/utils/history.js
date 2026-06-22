@@ -1,8 +1,10 @@
+import { addDays } from './date.js';
+
 const DAY_MS = 86400000;
 const sum = (rows, key) => rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
 const safeDivide = (a, b) => (b ? a / b : 0);
 const toDate = (date) => new Date(`${date}T00:00:00Z`);
-export const addDays = (date, days) => new Date(toDate(date).getTime() + days * DAY_MS).toISOString().slice(0, 10);
+export { addDays };
 
 export const getSkuOptions = (records) => [...new Set(records.map((record) => record.sku).filter(Boolean))].sort();
 export const getDateOptions = (records) => [...new Set(records.map((record) => record.date).filter(Boolean))].sort().reverse();
@@ -12,8 +14,8 @@ export const resolveDateRange = (records, filters = {}) => {
   const dates = getDateOptions(records).slice().reverse();
   const latest = dates.at(-1) || '';
   if (filters.allDates) return { allDates: true, startDate: dates[0] || '', endDate: latest };
-  const startDate = filters.startDate || filters.date || latest;
-  const endDate = filters.endDate || filters.date || latest;
+  const startDate = filters.startDate || filters.date || '';
+  const endDate = filters.endDate || filters.date || '';
   if (startDate && endDate && startDate > endDate) return { allDates: false, startDate: endDate, endDate: startDate };
   return { allDates: false, startDate, endDate };
 };

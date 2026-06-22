@@ -78,6 +78,11 @@ const detectAdStatus = (record, headers, row, headerMap) => {
   return allBlank ? '无广告数据' : '关闭';
 };
 
+export const hasEffectiveDailyData = (record) => [...NUMERIC_FIELD_KEYS].some((key) => {
+  const value = Number(record[key]);
+  return Number.isFinite(value) && value !== 0;
+}) || Boolean(String(record.operationAction || '').trim());
+
 const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   const headerMap = buildHeaderMap(headers);
   const record = { sku: sheetName.trim(), sourceSheet: sheetName.trim() };
@@ -111,7 +116,7 @@ export const parseExcelWorkbook = async (file) => {
     const headers = rows[headerIndex];
     rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).forEach((row) => {
       const record = normalizeSheetRow(sheetName, headers, row, XLSX);
-      if (record.date) {
+      if (record.date && hasEffectiveDailyData(record)) {
         records.push(record);
         const parsedAction = parseOperationActionText(record.operationAction, record.date, record.sku);
         if (parsedAction) actions.push(parsedAction);
