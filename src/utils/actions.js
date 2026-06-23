@@ -1,3 +1,5 @@
+import { normalizeDateKey } from './date.js';
+
 export const OVERALL_AD_STATUS_OPTIONS = ['无广告', '仅 CPC', '仅 CPM', 'CPC+CPM'];
 export const AD_STATUS_OPTIONS = OVERALL_AD_STATUS_OPTIONS;
 export const BOOLEAN_STATUS_OPTIONS = ['开启', '关闭'];
@@ -8,7 +10,14 @@ export const PRICE_ACTION_OPTIONS = ['涨价', '降价', '保持价格', '参加
 export const IMAGE_ACTION_OPTIONS = ['更换主图', '未更换'];
 export const KEYWORD_ACTION_OPTIONS = ['调整标题', '调整关键词', '未调整'];
 export const STOCK_ACTION_OPTIONS = ['补货', '库存不足', '库存正常'];
-export const ACTION_SOURCE_OPTIONS = ['Excel 自动识别', '手动填写', '手动修改'];
+export const ACTION_SOURCE_OPTIONS = ['manual', 'manual_modified', 'json_import', 'excel_auto'];
+export const ACTION_SOURCE_LABELS = {
+  manual: '手动填写',
+  manual_modified: '手动修改',
+  json_import: 'JSON 导入',
+  excel_auto: 'Excel 自动识别',
+};
+export const ACTION_SOURCE_PRIORITY = { excel_auto: 1, json_import: 2, manual: 3, manual_modified: 4 };
 
 export const ACTION_FIELDS = [
   { key: 'adStatus', label: '整体广告状态', options: OVERALL_AD_STATUS_OPTIONS, disabled: true, group: '基础字段' },
@@ -37,7 +46,7 @@ export const ACTION_FIELDS = [
 export const createEmptyAction = (date = '', sku = '') => ({
   date, sku, adStatus: '无广告', cpcEnabled: '关闭', cpcSearchBid: '', cpcDailyBudget: '', cpcNote: '',
   cpmEnabled: '关闭', cpmPosition: '', cpmBidType: '', cpmSearchBid: '', cpmRecommendBid: '', cpmUnifiedBid: '', cpmDailyBudget: '', cpmNote: '',
-  budgetAction: '', priceAction: '', imageAction: '', keywordAction: '', stockAction: '', source: '手动填写', rawOperationAction: '', note: '',
+  budgetAction: '', priceAction: '', imageAction: '', keywordAction: '', stockAction: '', source: 'manual', rawOperationAction: '', note: '',
   adMode: '无广告', adPosition: '', dailyBudget: '',
 });
 
@@ -119,11 +128,38 @@ export const applyAdRules = (action) => {
 
 export const normalizeAction = (action) => {
   const aliased = normalizeActionAliases(action);
-  const date = String(aliased.date || '').trim();
+  const date = normalizeDateKey(aliased.date);
   const sku = String(aliased.sku || '').trim();
-  const normalized = { ...createEmptyAction(), ...aliased, date, sku };
+  const sourceAlias = { 'Excel 自动识别': 'excel_auto', 手动填写: 'manual', 手动修改: 'manual_modified', 'JSON 导入': 'json_import' };
+  const normalized = { ...createEmptyAction(), ...aliased, date, sku, source: sourceAlias[aliased.source] || aliased.source || 'manual' };
   numberFields.forEach((field) => { if (field in normalized) normalized[field] = toNumberOrEmpty(normalized[field]); });
-  return { ...applyAdRules(normalized), uniqueKey: `${date}__${sku}`, updatedAt: new Date().toISOString() };
+  return { ...applyAdRules(normalized), uniqueKey: `${date}__${sku}`, updatedAt: normalized.updatedAt || new Date().toISOString() };
+};
+
+export const shouldReplaceAction = (incoming = {}, existing = {}) => {
+  if (!existing?.uniqueKey) return true;
+  const incomingPriority = ACTION_SOURCE_PRIORITY[incoming.source] || 0;
+  const existingPriority = ACTION_SOURCE_PRIORITY[existing.source] || 0;
+  if (incomingPriority !== existingPriority) return incomingPriority > existingPriority;
+  return String(incoming.updatedAt || '') >= String(existing.updatedAt || '');
+};
+
+export const mergeActionRecords = (localActions = [], incomingActions = []) => {
+  const merged = new Map(localActions.map((action) => [action.uniqueKey, action]));
+  const stats = { added: 0, overwritten: 0, keptLocal: 0 };
+  incomingActions.forEach((action) => {
+    const existing = merged.get(action.uniqueKey);
+    if (!existing) {
+      merged.set(action.uniqueKey, action);
+      stats.added += 1;
+    } else if (shouldReplaceAction(action, existing)) {
+      merged.set(action.uniqueKey, action);
+      stats.overwritten += 1;
+    } else {
+      stats.keptLocal += 1;
+    }
+  });
+  return { actions: [...merged.values()], stats };
 };
 
 const keyMap = new Map([
@@ -150,7 +186,7 @@ export const parseOperationActionText = (text, date = '', sku = '') => {
     parsed[field] = part.slice(index + 1).trim(); matched += 1;
   });
   if (!matched || unknown > 0) return null;
-  parsed.rawOperationAction = raw; parsed.source = 'Excel 自动识别';
+  parsed.rawOperationAction = raw; parsed.source = 'excel_auto';
   return normalizeAction(parsed);
 };
 
@@ -158,7 +194,7 @@ export const actionToSummary = (action) => {
   if (!action) return '未填写结构化动作';
   const normalized = normalizeAction(action);
   const parts = [
-    normalized.source && `来源：${normalized.source}`,
+    normalized.source && `来源：${ACTION_SOURCE_LABELS[normalized.source] || normalized.source}`,
     `整体广告状态：${normalized.adStatus}`,
     `CPC状态：${normalized.cpcEnabled}`,
     normalized.cpcSearchBid !== '' && `CPC搜索出价：${normalized.cpcSearchBid}`,

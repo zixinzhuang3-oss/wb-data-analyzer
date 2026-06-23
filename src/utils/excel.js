@@ -1,6 +1,7 @@
 import { DAILY_FIELDS, NUMERIC_FIELD_KEYS, fieldLabels, isSkuSheet } from './fields.js';
 import { parseOperationActionText } from './actions.js';
 import { CNY_TO_RUB } from './currency.js';
+import { normalizeDateKey } from './date.js';
 
 const SHEETJS_CDN = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
 
@@ -18,25 +19,7 @@ const loadSheetJs = () => new Promise((resolve, reject) => {
 });
 
 const normalizeHeader = (value) => String(value ?? '').trim().replace(/\s+/g, '').toLowerCase();
-const pad2 = (value) => String(value).padStart(2, '0');
-const formatYmd = (year, month, day) => `${year}-${pad2(month)}-${pad2(day)}`;
-
-export const toIsoDate = (value, XLSX = window.XLSX) => {
-  if (value === undefined || value === null || value === '') return '';
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return formatYmd(value.getFullYear(), value.getMonth() + 1, value.getDate());
-  if (typeof value === 'number') {
-    const parsed = XLSX?.SSF?.parse_date_code?.(value);
-    return parsed ? formatYmd(parsed.y, parsed.m, parsed.d) : '';
-  }
-  const text = String(value).trim();
-  let match = text.match(/^(\d{4})[\-/\.年](\d{1,2})[\-/\.月](\d{1,2})/);
-  if (match) return formatYmd(match[1], match[2], match[3]);
-  match = text.match(/^(\d{1,2})\s*月\s*(\d{1,2})\s*日?$/);
-  if (match) return formatYmd(new Date().getFullYear(), match[1], match[2]);
-  match = text.match(/^(\d{1,2})[\-/\.](\d{1,2})$/);
-  if (match) return formatYmd(new Date().getFullYear(), match[1], match[2]);
-  return text;
-};
+export const toIsoDate = (value, XLSX = window.XLSX) => normalizeDateKey(value, XLSX);
 
 export const toNumber = (value) => {
   if (value === undefined || value === null || String(value).trim() === '') return 0;
