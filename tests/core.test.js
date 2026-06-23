@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { buildSheetDiagnostics, hasEffectiveDailyData, normalizeSheetRow, toIsoDate, toNumber } from '../src/utils/excel.js';
-import { parseOperationActionText, normalizeAction, actionToSummary } from '../src/utils/actions.js';
+import { parseOperationActionText, normalizeAction, actionToSummary, mergeActionRecords, shouldReplaceAction } from '../src/utils/actions.js';
 import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
 import { addDays, buildQuickRange, formatDateInTimeZone, getTodayDate } from '../src/utils/date.js';
@@ -51,7 +51,7 @@ const scenarios = [
 scenarios.forEach(([name, text, expected], index) => {
   const parsed = parseOperationActionText(text, '2026-06-17', `ES${String(index).padStart(3, '0')}BK`);
   assert.ok(parsed, name);
-  assert.equal(parsed.source, 'Excel 自动识别');
+  assert.equal(parsed.source, 'excel_auto');
   Object.entries(expected).forEach(([key, value]) => assert.equal(parsed[key], value, `${name} ${key}`));
 });
 
@@ -102,7 +102,62 @@ const missingPreviousActionAnalysis = buildEffectAnalysis([
 assert.equal(missingPreviousActionAnalysis.latestAction, null);
 assert.equal(missingPreviousActionAnalysis.actionMeta.requiredActionDate, '2026-06-21');
 assert.equal(missingPreviousActionAnalysis.actionMeta.found, false);
-assert.match(missingPreviousActionAnalysis.primaryRecommendation.reason, /未找到上一日动作记录，无法判断动作效果/);
+assert.match(missingPreviousActionAnalysis.primaryRecommendation.reason, /未找到 2026-06-21 \/ ES030BK 的动作记录，无法判断动作效果/);
+
+
+
+// Import / merge order invariance and action priority rules.
+const yesterdayJsonAction = normalizeAction({ date: '2026/06/22', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 20, cpmEnabled: '关闭', source: 'json_import', updatedAt: '2026-06-22T20:00:00.000Z' });
+const todayExcelAction = parseOperationActionText('CPC=开启；CPC搜索出价=10；CPC预算=100；CPM=关闭', '2026-06-23', 'ES920E');
+const sequenceA = mergeActionRecords([], [yesterdayJsonAction]);
+const sequenceAFinal = mergeActionRecords(sequenceA.actions, [todayExcelAction]);
+const sequenceB = mergeActionRecords([], [todayExcelAction]);
+const sequenceBFinal = mergeActionRecords(sequenceB.actions, [yesterdayJsonAction]);
+assert.equal(sequenceAFinal.actions.find((item) => item.uniqueKey === '2026-06-22__ES920E')?.source, 'json_import');
+assert.equal(sequenceBFinal.actions.find((item) => item.uniqueKey === '2026-06-22__ES920E')?.source, 'json_import');
+assert.deepEqual(new Set(sequenceAFinal.actions.map((item) => item.uniqueKey)), new Set(sequenceBFinal.actions.map((item) => item.uniqueKey)));
+
+const manualAction = normalizeAction({ date: '2026-06-23', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 35, cpmEnabled: '关闭', source: 'manual', updatedAt: '2026-06-23T10:00:00.000Z' });
+const blankExcelAction = parseOperationActionText('', '2026-06-23', 'ES920E');
+assert.equal(blankExcelAction, null);
+assert.equal(mergeActionRecords([manualAction], [todayExcelAction]).actions[0].source, 'manual');
+assert.equal(mergeActionRecords([manualAction], [todayExcelAction]).stats.keptLocal, 1);
+
+const manualModifiedAction = normalizeAction({ date: '2026-06-23', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 50, cpmEnabled: '关闭', source: 'manual_modified', updatedAt: '2026-06-23T09:00:00.000Z' });
+const newerJsonAction = normalizeAction({ date: '2026-06-23', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 45, cpmEnabled: '关闭', source: 'json_import', updatedAt: '2026-06-23T12:00:00.000Z' });
+assert.equal(shouldReplaceAction(newerJsonAction, manualModifiedAction), false);
+assert.equal(mergeActionRecords([manualModifiedAction], [newerJsonAction]).actions[0].cpcSearchBid, 50);
+
+const olderJsonAction = normalizeAction({ date: '2026-06-23', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 11, cpmEnabled: '关闭', source: 'json_import', updatedAt: '2026-06-23T08:00:00.000Z' });
+const newerSamePriorityJsonAction = normalizeAction({ date: '2026-06-23', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 12, cpmEnabled: '关闭', source: 'json_import', updatedAt: '2026-06-23T09:00:00.000Z' });
+assert.equal(shouldReplaceAction(newerSamePriorityJsonAction, olderJsonAction), true);
+assert.equal(mergeActionRecords([olderJsonAction], [newerSamePriorityJsonAction]).actions[0].cpcSearchBid, 12);
+
+const localOnlyAction = normalizeAction({ date: '2026-06-21', sku: 'LOCAL', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'manual' });
+assert.equal(mergeActionRecords([localOnlyAction], [yesterdayJsonAction]).actions.some((item) => item.uniqueKey === '2026-06-21__LOCAL'), true);
+
+const exactPreviousActionAnalysis = buildEffectAnalysis([
+  { date: '2026-06-22', sku: 'ES920E', uniqueKey: '2026-06-22__ES920E', totalOrders: 1, adSpend: 10, revenue: 100, profit: 10 },
+  { date: '2026-06-23', sku: 'ES920E', uniqueKey: '2026-06-23__ES920E', totalOrders: 2, adSpend: 20, revenue: 200, profit: 20 },
+], [yesterdayJsonAction], { date: '2026-06-23', sku: 'ES920E' })[0];
+assert.equal(exactPreviousActionAnalysis.actionMeta.requiredActionDate, '2026-06-22');
+assert.equal(exactPreviousActionAnalysis.latestAction.uniqueKey, '2026-06-22__ES920E');
+
+const exactMissingActionAnalysis = buildEffectAnalysis([
+  { date: '2026-06-22', sku: 'ES921E', uniqueKey: '2026-06-22__ES921E', totalOrders: 1, adSpend: 0, revenue: 100, profit: 10 },
+  { date: '2026-06-23', sku: 'ES921E', uniqueKey: '2026-06-23__ES921E', totalOrders: 2, adSpend: 0, revenue: 200, profit: 20 },
+], [], { date: '2026-06-23', sku: 'ES921E' })[0];
+assert.equal(exactMissingActionAnalysis.latestAction, null);
+assert.match(exactMissingActionAnalysis.primaryRecommendation.reason, /未找到 2026-06-22 \/ ES921E 的动作记录/);
+assert.doesNotMatch(exactMissingActionAnalysis.primaryRecommendation.reason, /CPC|CPM|无广告/);
+
+const slashDateAction = normalizeAction({ date: '2026/06/22', sku: 'ES922E', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'json_import' });
+assert.equal(slashDateAction.uniqueKey, '2026-06-22__ES922E');
+const serialDateAction = normalizeAction({ date: toIsoDate(46191, XLSX), sku: 'ES923E', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'json_import' });
+assert.equal(serialDateAction.uniqueKey, '2026-06-18__ES923E');
+const exportedLike = { records: [{ date: '2026-06-23', sku: 'ES920E', uniqueKey: '2026-06-23__ES920E' }], actionRecords: [yesterdayJsonAction], recommendationHistory: [{ date: '2026-06-23', sku: 'ES920E', recommendationType: '观察1天' }], settings: {}, exportedAt: '2026-06-23T00:00:00.000Z' };
+assert.equal(exportedLike.actionRecords.length, 1);
+assert.equal(mergeActionRecords([], exportedLike.actionRecords).actions[0].uniqueKey, '2026-06-22__ES920E');
 
 const rangeRecords = [
   { date: '2026-06-10', sku: 'ES035BK', uniqueKey: '2026-06-10__ES035BK', totalOrders: 1, adSpend: 10, adImpressions: 100, adClicks: 10, revenue: 100, profit: 10 },

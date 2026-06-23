@@ -1,9 +1,9 @@
 import { parseExcelWorkbook } from './utils/excel.js';
-import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup, saveAction, saveRecords } from './utils/storage.js';
+import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup, saveAction, saveExcelActions, saveRecords } from './utils/storage.js';
 import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
-import { ACTION_FIELDS, actionToSummary, applyAdRules, createEmptyAction, normalizeAction } from './utils/actions.js';
+import { ACTION_FIELDS, ACTION_SOURCE_LABELS, actionToSummary, applyAdRules, createEmptyAction, normalizeAction } from './utils/actions.js';
 import { buildEffectAnalysis, metricLabels } from './utils/effectAnalysis.js';
 import { buildQuickRange, getTodayDate } from './utils/date.js';
 import { toProfitCny, toProfitRub } from './utils/currency.js';
@@ -69,19 +69,22 @@ async function handleExcelUpload(file) {
   try {
     const result = await parseExcelWorkbook(file);
     if (!result.records.length) throw new Error('没有识别到有效 SKU sheet 或有效每日数据行。');
-    await saveRecords(result.records);
-    if (result.actions?.length) await Promise.all(result.actions.map(saveAction));
+    const recordStats = await saveRecords(result.records);
+    const actionStats = await saveExcelActions(result.actions || []);
     await refreshRecords();
     applyDefaultQuickRange();
     state.lastImport = {
       fileName: file.name,
       savedCount: result.records.length,
-      actionCount: result.actions?.length || 0,
+      recordsAdded: recordStats.added,
+      recordsOverwritten: recordStats.overwritten,
+      actionCount: actionStats.autoActionAdded,
+      keptManualActions: actionStats.keptManualActions,
       skuSheets: result.skuSheets,
       skippedSheets: result.skippedSheets,
       diagnostics: result.diagnostics || [],
     };
-    state.status = `导入完成：保存/覆盖 ${result.records.length} 行，自动识别动作 ${result.actions?.length || 0} 条，识别 SKU sheet ${result.skuSheets.length} 个。`;
+    state.status = `导入完成：新增经营数据 ${recordStats.added} 条，覆盖经营数据 ${recordStats.overwritten} 条，自动识别动作记录 ${actionStats.autoActionAdded} 条，被保留的手动动作记录 ${actionStats.keptManualActions} 条。`;
   } catch (error) {
     state.status = `导入失败：${error.message || error}`;
   } finally {
@@ -111,7 +114,7 @@ async function handleBackupImport(file) {
     const result = await importBackup(backup);
     await refreshRecords();
     applyDefaultQuickRange();
-    state.status = `备份导入完成：恢复 ${result.records} 条历史记录、${result.actions} 条动作记录。`; 
+    state.status = `备份导入完成：新增经营数据 ${result.recordsAdded} 条，覆盖经营数据 ${result.recordsOverwritten} 条，新增动作记录 ${result.actionsAdded} 条，覆盖动作记录 ${result.actionsOverwritten} 条，保留本地较新动作记录 ${result.actionsKeptLocal} 条，当前动作记录总数 ${result.currentActionTotal} 条。`;
   } catch (error) {
     state.status = `备份导入失败：${error.message || error}`;
   } finally {
@@ -123,7 +126,7 @@ async function handleBackupImport(file) {
 async function handleBackupExport() {
   const backup = await exportBackup();
   downloadJson(`wb-data-backup-${new Date().toISOString().slice(0, 10)}.json`, backup);
-  state.status = `已导出备份 JSON：${backup.records.length} 条历史记录、${backup.actions.length} 条动作记录。`;
+  state.status = `已导出：经营数据 ${backup.records.length} 条，动作记录 ${backup.actionRecords.length} 条，建议历史 ${backup.recommendationHistory.length} 条。`;
   render();
 }
 
@@ -137,11 +140,14 @@ const renderOptions = (options, current, placeholder) => [`<option value="">${pl
 
 function renderImportSummary() {
   if (!state.lastImport) return '<p class="empty-state">尚未导入 Excel。本阶段会自动跳过 wb利润定价表、ozon利润定价表、Sheet10 等辅助 sheet。</p>';
-  const { fileName, savedCount, actionCount = 0, skuSheets, skippedSheets } = state.lastImport;
+  const { fileName, savedCount, recordsAdded = 0, recordsOverwritten = 0, actionCount = 0, keptManualActions = 0, skuSheets, skippedSheets } = state.lastImport;
   return `<div class="import-result">
     <strong>${html(fileName)}</strong>
     <span>保存/覆盖 ${savedCount} 行</span>
+    <span>新增经营数据：${recordsAdded} 条</span>
+    <span>覆盖经营数据：${recordsOverwritten} 条</span>
     <span>Excel 自动识别动作：${actionCount} 条</span>
+    <span>保留手动动作：${keptManualActions} 条</span>
     <span>识别 SKU：${skuSheets.map(html).join('、') || '-'}</span>
     <span>跳过辅助 sheet：${skippedSheets.map(html).join('、') || '-'}</span>
   </div>`;
@@ -189,7 +195,9 @@ const setActionDraftFromKey = (uniqueKey) => {
 };
 
 async function handleActionSave() {
-  const action = normalizeAction(state.actionDraft);
+  const currentKey = getCurrentActionKey();
+  const existing = actionMap().get(currentKey);
+  const action = normalizeAction({ ...state.actionDraft, source: existing ? 'manual_modified' : 'manual' });
   if (!action.date || !action.sku) {
     state.status = '动作保存失败：请先选择日期和 SKU。';
     render();
@@ -237,7 +245,25 @@ function renderActionField(field) {
     return `<label class="form-field"><span>${field.label}</span><input data-action-field="${field.key}" type="number" step="0.01" value="${html(value)}" /></label>`;
   }
   const disabled = field.disabled ? 'disabled' : '';
-  return `<label class="form-field"><span>${field.label}</span><select data-action-field="${field.key}" ${disabled}><option value="">请选择</option>${field.options.map((option) => `<option value="${html(option)}" ${option === value ? 'selected' : ''}>${html(option)}</option>`).join('')}</select></label>`;
+  return `<label class="form-field"><span>${field.label}</span><select data-action-field="${field.key}" ${disabled}><option value="">请选择</option>${field.options.map((option) => `<option value="${html(option)}" ${option === value ? 'selected' : ''}>${html(ACTION_SOURCE_LABELS[option] || option)}</option>`).join('')}</select></label>`;
+}
+
+function renderActionDiagnostics() {
+  const date = state.actionDraft.date || state.selectedDetailKey.split('__')[0] || '';
+  const sku = state.actionDraft.sku || state.selectedDetailKey.split('__')[1] || '';
+  const previousDate = date ? buildQuickRange('yesterday', date).startDate : '';
+  const actions = actionMap();
+  const currentAction = date && sku ? actions.get(`${date}__${sku}`) : null;
+  const previousAction = previousDate && sku ? actions.get(`${previousDate}__${sku}`) : null;
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">?</span><div><h2>动作记录诊断</h2><p>按统一日期 key 检查当前日期和上一日的动作记录是否存在。</p></div></div>
+    <div class="metrics-grid">
+      <div class="metric-card"><span>当前选择</span><strong>${html(date || '-')} / ${html(sku || '-')}</strong><small>${currentAction ? '有动作记录' : '无动作记录'}</small></div>
+      <div class="metric-card"><span>上一日</span><strong>${html(previousDate || '-')} / ${html(sku || '-')}</strong><small>${previousAction ? '有动作记录' : '无动作记录'}</small></div>
+      <div class="metric-card"><span>当前记录来源</span><strong>${html(ACTION_SOURCE_LABELS[currentAction?.source] || currentAction?.source || '-')}</strong><small>更新时间：${html(currentAction?.updatedAt || '-')}</small></div>
+      <div class="metric-card"><span>上一日记录来源</span><strong>${html(ACTION_SOURCE_LABELS[previousAction?.source] || previousAction?.source || '-')}</strong><small>更新时间：${html(previousAction?.updatedAt || '-')}</small></div>
+      <div class="metric-card"><span>IndexedDB 动作记录总数</span><strong>${formatNumber(state.actions.length)}</strong></div>
+      <div class="metric-card"><span>IndexedDB 经营数据总数</span><strong>${formatNumber(state.records.length)}</strong></div>
+    </div></section>`;
 }
 
 function renderActionModule(dates, skus) {
@@ -301,12 +327,13 @@ function renderEffectCards(analyses) {
   if (!analyses.length) return '';
   return `<section class="panel"><div class="panel-heading"><span class="panel-icon">↗</span><div><h2>动作效果分析卡片</h2><p>严格按“昨天动作 → 今天结果”读取 IndexedDB 中分析日期前一天 + 当前 SKU 的动作记录。</p></div><button id="refresh-effect-analysis" type="button">刷新动作分析</button></div><div class="effect-grid">${analyses.map((item) => {
     const effectText = item.noValidData ? (item.actionMeta?.found ? '已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。' : '当前时间段暂无有效数据，无法生成策略建议。') : item.effects.length ? item.effects.map((effect) => `${effect.level}：${effect.text}`).join(' ') : '暂无明确动作效果，建议继续观察。';
-    const actionSummary = item.actionMeta?.found ? actionToSummary(item.latestAction) : '未找到上一日动作记录，无法判断动作效果';
+    const missingActionText = `未找到 ${item.actionMeta?.requiredActionDate || item.actionMeta?.comparisonDate || '-'} / ${item.actionMeta?.sku || item.sku} 的动作记录，无法判断动作效果。`;
+    const actionSummary = item.actionMeta?.found ? actionToSummary(item.latestAction) : missingActionText;
     const resultText = item.noValidData
       ? (item.actionMeta?.found ? '已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。' : '当前时间段暂无有效数据，无法生成策略建议。')
       : item.actionMeta?.found
         ? `昨天动作 → 今天结果：${actionSummary}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`
-        : `未找到上一日动作记录，无法判断动作效果；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`;
+        : `${missingActionText} 今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`;
     return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(actionSummary)}</span></div>
       <div class="mini-metrics action-meta">
         <span>分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
@@ -512,6 +539,7 @@ function render() {
     ${renderIntervalSummary(comparison)}
     ${renderSkuComparison(comparison)}
     ${renderActionModule(dates, skus)}
+    ${renderActionDiagnostics()}
     ${renderStrategyBoard(effectAnalyses, comparison)}
     ${renderEffectCards(effectAnalyses)}
     ${renderRiskPanel(effectAnalyses)}
@@ -540,7 +568,7 @@ function render() {
   document.getElementById('action-sku')?.addEventListener('change', (event) => { state.actionDraft.sku = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.querySelectorAll('[data-action-field]').forEach((input) => {
     input.addEventListener('input', (event) => { state.actionDraft[event.target.dataset.actionField] = event.target.value; });
-    input.addEventListener('change', (event) => { state.actionDraft[event.target.dataset.actionField] = event.target.value; state.actionDraft.source = state.actionDraft.source === 'Excel 自动识别' ? '手动修改' : state.actionDraft.source; state.actionDraft = applyAdRules(state.actionDraft); render(); });
+    input.addEventListener('change', (event) => { state.actionDraft[event.target.dataset.actionField] = event.target.value; state.actionDraft.source = ['excel_auto', 'json_import'].includes(state.actionDraft.source) ? 'manual_modified' : state.actionDraft.source; state.actionDraft = applyAdRules(state.actionDraft); render(); });
   });
   document.getElementById('save-action')?.addEventListener('click', handleActionSave);
   document.getElementById('delete-action')?.addEventListener('click', () => handleActionDelete());

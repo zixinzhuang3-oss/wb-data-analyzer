@@ -1,7 +1,6 @@
 import { toProfitRub } from './currency.js';
 import { hasValidBusinessData } from './excel.js';
-
-const DAY_MS = 86400000;
+import { addDays as addDateDays, normalizeDateKey } from './date.js';
 
 const METRICS = {
   totalOrders: '订单量',
@@ -26,9 +25,6 @@ const ADVICE_TYPES = [
   '优化标题关键词', '降价或参加活动', '控制广告花费', '补货', '观察1天', '恢复小预算搜索广告', '暂停推荐位', '保留CPC暂停CPM推荐', '保留CPM推荐', '关闭CPM推荐',
 ];
 
-const toDate = (date) => new Date(`${date}T00:00:00Z`);
-const toIsoDate = (date) => date.toISOString().slice(0, 10);
-const addDays = (date, days) => toIsoDate(new Date(toDate(date).getTime() + days * DAY_MS));
 const safeDivide = (a, b) => (b ? a / b : 0);
 const number = (value) => Number(value) || 0;
 const pct = (value) => `${((value || 0) * 100).toFixed(1)}%`;
@@ -86,7 +82,7 @@ const buildMetricSnapshot = (todayRecord, yesterdayRecord, last3, last7, before3
   }]));
 };
 
-const actionForDate = (actionsByKey, date, sku) => actionsByKey.get(`${date}__${sku}`);
+const actionForDate = (actionsByKey, date, sku) => actionsByKey.get(`${normalizeDateKey(date)}__${sku}`);
 const noDataRecommendation = (sku, hasPreviousAction) => makeRecommendation('观察1天', hasPreviousAction
   ? `${sku} 已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。`
   : `${sku} 当前时间段暂无有效数据，无法生成策略建议。`, '低');
@@ -240,7 +236,7 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
 };
 
 export const buildEffectAnalysis = (records = [], actions = [], filters = {}) => {
-  const actionsByKey = new Map(actions.map((action) => [action.uniqueKey, action]));
+  const actionsByKey = new Map(actions.map((action) => [`${normalizeDateKey(action.date)}__${action.sku}`, { ...action, date: normalizeDateKey(action.date), uniqueKey: `${normalizeDateKey(action.date)}__${action.sku}` }]));
   const bySku = new Map();
   const candidateSkus = new Set();
   records.forEach((record) => {
@@ -261,7 +257,7 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const targetDate = filters.endDate || filters.date || inRange.at(-1)?.date || sorted.at(-1)?.date;
     const exactToday = targetDate ? inRange.find((record) => record.date === targetDate) : null;
     const today = exactToday || (!targetDate ? inRange.at(-1) || sorted.at(-1) : null);
-    const requiredActionDate = targetDate ? addDays(targetDate, -1) : '';
+    const requiredActionDate = targetDate ? addDateDays(targetDate, -1) : '';
     const missingCurrentData = !today || (targetDate && !exactToday);
     const latestActionForMissing = requiredActionDate ? actionForDate(actionsByKey, requiredActionDate, sku) || null : null;
     if (missingCurrentData) {
@@ -282,7 +278,7 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
       };
     }
     const todayIndex = sorted.findIndex((record) => record.uniqueKey === today.uniqueKey);
-    const yesterdayDate = addDays(today.date, -1);
+    const yesterdayDate = addDateDays(today.date, -1);
     const yesterday = sorted.find((record) => record.date === yesterdayDate) || sorted[todayIndex - 1] || {};
     const last3Rows = sorted.slice(Math.max(0, todayIndex - 2), todayIndex + 1);
     const last7Rows = sorted.slice(Math.max(0, todayIndex - 6), todayIndex + 1);
@@ -294,7 +290,7 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const metrics = buildMetricSnapshot(today, yesterday, averageRecords(last3Rows), averageRecords(last7Rows), averageRecords(before3Rows), averageRecords(after3Rows));
     const ruleResult = latestAction
       ? analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) })
-      : { recommendations: [makeRecommendation('观察1天', `${sku} 未找到上一日动作记录，无法判断动作效果。`, '低')], risks: [], effects: [] };
+      : { recommendations: [makeRecommendation('观察1天', `未找到 ${requiredActionDate} / ${sku} 的动作记录，无法判断动作效果。`, '低')], risks: [], effects: [] };
 
     return {
       sku,
