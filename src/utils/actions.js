@@ -5,6 +5,8 @@ export const AD_STATUS_OPTIONS = OVERALL_AD_STATUS_OPTIONS;
 export const BOOLEAN_STATUS_OPTIONS = ['开启', '关闭'];
 export const CPM_POSITION_OPTIONS = ['仅搜索', '仅推荐', '搜索+推荐'];
 export const CPM_BID_TYPE_OPTIONS = ['手动出价', '统一出价'];
+export const CPM_SEARCH_MIN_BID = 450;
+export const CPM_RECOMMEND_MIN_BID = 200;
 export const BUDGET_ACTION_OPTIONS = ['加大预算', '降低预算', '保持预算', '暂停广告', '恢复广告'];
 export const PRICE_ACTION_OPTIONS = ['涨价', '降价', '保持价格', '参加活动'];
 export const IMAGE_ACTION_OPTIONS = ['更换主图', '未更换'];
@@ -99,6 +101,33 @@ export const calculateOverallAdStatus = (action = {}) => {
   if (cpc) return '仅 CPC';
   if (cpm) return '仅 CPM';
   return '无广告';
+};
+
+export const getCpmMinBidForAction = (action = {}, field = 'cpmUnifiedBid') => {
+  const position = normalizePosition(action.cpmPosition || action.adPosition);
+  if (field === 'cpmSearchBid') return CPM_SEARCH_MIN_BID;
+  if (field === 'cpmRecommendBid') return CPM_RECOMMEND_MIN_BID;
+  if (field === 'cpmUnifiedBid') return ['仅推荐', '推荐'].includes(position) ? CPM_RECOMMEND_MIN_BID : CPM_SEARCH_MIN_BID;
+  return 0;
+};
+
+export const validateCpmMinBids = (action = {}) => {
+  const errors = [];
+  const enabled = enabledFrom(action.cpmEnabled) || action.cpmEnabled === '开启';
+  if (!enabled) return errors;
+  const position = normalizePosition(action.cpmPosition || action.adPosition);
+  const bidType = action.cpmBidType || '手动出价';
+  const check = (field, label) => {
+    const value = toNumberOrEmpty(action[field]);
+    const min = getCpmMinBidForAction({ ...action, cpmPosition: position }, field);
+    if (value !== '' && value < min) errors.push(`${label}不能低于 ${min}`);
+  };
+  if (bidType === '统一出价') check('cpmUnifiedBid', position === '仅推荐' ? 'CPM 推荐统一出价' : 'CPM 搜索/推荐统一出价');
+  else {
+    if (['仅搜索', '搜索', '搜索+推荐'].includes(position)) check('cpmSearchBid', 'CPM 搜索出价');
+    if (['仅推荐', '推荐', '搜索+推荐'].includes(position)) check('cpmRecommendBid', 'CPM 推荐出价');
+  }
+  return errors;
 };
 
 export const applyAdRules = (action) => {
@@ -206,6 +235,7 @@ export const actionToSummary = (action) => {
     normalized.cpmSearchBid !== '' && `CPM搜索出价：${normalized.cpmSearchBid}`,
     normalized.cpmRecommendBid !== '' && `CPM推荐出价：${normalized.cpmRecommendBid}`,
     normalized.cpmUnifiedBid !== '' && `CPM统一出价：${normalized.cpmUnifiedBid}`,
+    normalized.cpmEnabled === '开启' && `最低出价提示：CPM搜索最低 ${CPM_SEARCH_MIN_BID}，CPM推荐最低 ${CPM_RECOMMEND_MIN_BID}`,
     normalized.cpmDailyBudget !== '' && `CPM预算：${normalized.cpmDailyBudget}`,
     normalized.cpmNote && `CPM备注：${normalized.cpmNote}`,
     normalized.budgetAction && `预算动作：${normalized.budgetAction}`,

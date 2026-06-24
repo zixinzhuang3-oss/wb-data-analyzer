@@ -3,7 +3,7 @@ import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup,
 import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
-import { ACTION_FIELDS, ACTION_SOURCE_LABELS, actionToSummary, applyAdRules, createEmptyAction, normalizeAction } from './utils/actions.js';
+import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, createEmptyAction, getCpmMinBidForAction, normalizeAction, validateCpmMinBids } from './utils/actions.js';
 import { buildEffectAnalysis, metricLabels } from './utils/effectAnalysis.js';
 import { buildQuickRange, getTodayDate } from './utils/date.js';
 import { toProfitCny, toProfitRub } from './utils/currency.js';
@@ -203,6 +203,12 @@ async function handleActionSave() {
     render();
     return;
   }
+  const bidErrors = validateCpmMinBids(action);
+  if (bidErrors.length) {
+    state.status = `动作保存失败：${bidErrors.join('；')}。CPM 搜索最低出价为 ${CPM_SEARCH_MIN_BID}，推荐最低出价为 ${CPM_RECOMMEND_MIN_BID}。`;
+    render();
+    return;
+  }
   await saveAction(action);
   await refreshRecords();
   state.selectedDetailKey = action.uniqueKey;
@@ -242,7 +248,10 @@ function renderActionField(field) {
     return `<label class="form-field wide-field"><span>${field.label}</span><textarea data-action-field="${field.key}" rows="3">${html(value)}</textarea></label>`;
   }
   if (field.type === 'number') {
-    return `<label class="form-field"><span>${field.label}</span><input data-action-field="${field.key}" type="number" step="0.01" value="${html(value)}" /></label>`;
+    const cpmBidField = ['cpmSearchBid', 'cpmRecommendBid', 'cpmUnifiedBid'].includes(field.key);
+    const min = cpmBidField ? getCpmMinBidForAction(draft, field.key) : '';
+    const hint = cpmBidField ? `<small class="field-hint">CPM 搜索最低出价为 ${CPM_SEARCH_MIN_BID}，推荐最低出价为 ${CPM_RECOMMEND_MIN_BID}。</small>` : '';
+    return `<label class="form-field"><span>${field.label}</span><input data-action-field="${field.key}" type="number" step="0.01" ${min ? `min="${min}"` : ''} value="${html(value)}" />${hint}</label>`;
   }
   const disabled = field.disabled ? 'disabled' : '';
   return `<label class="form-field"><span>${field.label}</span><select data-action-field="${field.key}" ${disabled}><option value="">请选择</option>${field.options.map((option) => `<option value="${html(option)}" ${option === value ? 'selected' : ''}>${html(ACTION_SOURCE_LABELS[option] || option)}</option>`).join('')}</select></label>`;
@@ -271,7 +280,7 @@ function renderActionModule(dates, skus) {
   const existing = actionMap().get(currentKey);
   const groups = ['基础字段', 'CPC 模块', 'CPM 模块'].map((group) => `<fieldset class="action-fieldset"><legend>${group}</legend><div class="action-form-grid">${ACTION_FIELDS.filter((field) => field.group === group).map(renderActionField).join('')}</div></fieldset>`).join('');
   return `<section class="panel action-panel">
-    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。</p></div></div>
+    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div>
     <div class="action-form-grid">
       <label class="form-field"><span>日期</span><select id="action-date"><option value="">选择日期</option>${dates.map((date) => `<option value="${html(date)}" ${date === state.actionDraft.date ? 'selected' : ''}>${html(date)}</option>`).join('')}</select></label>
       <label class="form-field"><span>SKU</span><select id="action-sku"><option value="">选择 SKU</option>${skus.map((sku) => `<option value="${html(sku)}" ${sku === state.actionDraft.sku ? 'selected' : ''}>${html(sku)}</option>`).join('')}</select></label>
@@ -316,7 +325,7 @@ function renderStrategyBoard(analyses, comparison) {
   if (!analyses.length) return '<section class="panel"><h2>明日策略建议看板</h2><p class="empty-state">导入历史数据后将自动生成明日策略建议。</p></section>';
   const allNoValidData = analyses.every((item) => item.noValidData);
   const context = allNoValidData ? '当前时间段暂无有效数据，请先导入数据。' : comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatRuble(deltaInfo(comparison.current.totalProfitRub, comparison.previous.totalProfitRub).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
-  return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、上一同长度时间段和每日动作，判断动作是否有效，并输出明日广告与运营建议。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
+  return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、上一同长度时间段和每日动作，判断动作是否有效，并输出明日广告与运营建议。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
     <div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(item.date)}</span></div>
     <h3>${html(item.noValidData ? '暂无当前日期数据' : item.primaryRecommendation.type)}</h3>
     <p>${html(item.noValidData ? '暂无当前日期数据，无法判断。' : item.primaryRecommendation.reason)}</p>

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { buildSheetDiagnostics, hasEffectiveDailyData, normalizeSheetRow, toIsoDate, toNumber } from '../src/utils/excel.js';
-import { parseOperationActionText, normalizeAction, actionToSummary, mergeActionRecords, shouldReplaceAction } from '../src/utils/actions.js';
+import { parseOperationActionText, normalizeAction, actionToSummary, mergeActionRecords, shouldReplaceAction, validateCpmMinBids } from '../src/utils/actions.js';
 import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
 import { addDays, buildQuickRange, formatDateInTimeZone, getTodayDate } from '../src/utils/date.js';
@@ -359,5 +359,41 @@ assert.match(mainSource, /总广告费：\$\{formatRuble/);
 assert.match(mainSource, /总利润：\$\{formatRuble/);
 assert.match(mainSource, /原始 \$\{formatYuan/);
 assert.doesNotMatch(mainSource, /总销售额（人民币|总广告费（人民币|总销售额 ¥|总广告费 ¥/);
+
+const buildPoorCpmAnalysis = (actionOverrides, sku = `CPM${Math.random().toString(36).slice(2, 8)}`) => buildEffectAnalysis([
+  { date: '2026-06-21', sku, uniqueKey: `2026-06-21__${sku}`, totalOrders: 3, adSpend: 100, adImpressions: 1000, adClicks: 50, revenue: 600, profitRub: 80, stock: 50 },
+  { date: '2026-06-22', sku, uniqueKey: `2026-06-22__${sku}`, totalOrders: 1, adSpend: 220, adImpressions: 4000, adClicks: 40, revenue: 120, profitRub: -180, stock: 50 },
+], [normalizeAction({ date: '2026-06-21', sku, cpcEnabled: '关闭', cpmEnabled: '开启', cpmDailyBudget: 500, source: '手动填写', ...actionOverrides })], { date: '2026-06-22', sku })[0];
+
+const combinedText = (analysisResult) => analysisResult.recommendations.map((item) => `${item.type} ${item.reason}`).join('\n');
+
+const minSearchAnalysis = buildPoorCpmAnalysis({ cpmPosition: '仅搜索', cpmBidType: '手动出价', cpmSearchBid: 450 }, 'CPM_SEARCH_MIN');
+assert.doesNotMatch(combinedText(minSearchAnalysis), /降低搜索出价 10%|降至 3|低于 450/);
+assert.match(combinedText(minSearchAnalysis), /搜索出价已是最低 450|无法继续降低出价/);
+
+const minRecommendAnalysis = buildPoorCpmAnalysis({ cpmPosition: '仅推荐', cpmBidType: '手动出价', cpmRecommendBid: 200 }, 'CPM_RECO_MIN');
+assert.doesNotMatch(combinedText(minRecommendAnalysis), /降低推荐出价|低于 200/);
+assert.match(combinedText(minRecommendAnalysis), /推荐出价已是最低 200|无法继续降低出价/);
+
+const highSearchAnalysis = buildPoorCpmAnalysis({ cpmPosition: '仅搜索', cpmBidType: '手动出价', cpmSearchBid: 600 }, 'CPM_SEARCH_HIGH');
+assert.match(combinedText(highSearchAnalysis), /搜索出价 600 高于最低 450/);
+assert.doesNotMatch(combinedText(highSearchAnalysis), /降至 [0-3]\d\d/);
+
+const highRecommendAnalysis = buildPoorCpmAnalysis({ cpmPosition: '仅推荐', cpmBidType: '手动出价', cpmRecommendBid: 300 }, 'CPM_RECO_HIGH');
+assert.match(combinedText(highRecommendAnalysis), /推荐出价 300 高于最低 200/);
+assert.doesNotMatch(combinedText(highRecommendAnalysis), /降至 1\d\d/);
+
+const bothMinAnalysis = buildPoorCpmAnalysis({ cpmPosition: '搜索+推荐', cpmBidType: '手动出价', cpmSearchBid: 450, cpmRecommendBid: 200 }, 'CPM_BOTH_MIN');
+assert.match(combinedText(bothMinAnalysis), /搜索和推荐均已在最低出价|降低整体预算|暂停表现更差的位置/);
+assert.doesNotMatch(combinedText(bothMinAnalysis), /降低搜索出价 10%|降至 [0-3]\d\d|低于 450|低于 200/);
+
+const unifiedSearchRecommend = normalizeAction({ date: '2026-06-21', sku: 'CPM_UNIFIED_BOTH', cpcEnabled: '关闭', cpmEnabled: '开启', cpmPosition: '搜索+推荐', cpmBidType: '统一出价', cpmUnifiedBid: 449 });
+assert.match(validateCpmMinBids(unifiedSearchRecommend).join('；'), /不能低于 450/);
+const unifiedMinAnalysis = buildPoorCpmAnalysis({ cpmPosition: '搜索+推荐', cpmBidType: '统一出价', cpmUnifiedBid: 450 }, 'CPM_UNIFIED_MIN');
+assert.match(combinedText(unifiedMinAnalysis), /统一出价已是搜索最低 450|无法继续降低统一出价/);
+
+const recommendOnlyUnified = normalizeAction({ date: '2026-06-21', sku: 'CPM_UNIFIED_RECO', cpcEnabled: '关闭', cpmEnabled: '开启', cpmPosition: '仅推荐', cpmBidType: '统一出价', cpmUnifiedBid: 199 });
+assert.match(validateCpmMinBids(recommendOnlyUnified).join('；'), /不能低于 200/);
+assert.deepEqual(validateCpmMinBids({ ...recommendOnlyUnified, cpmUnifiedBid: 200 }), []);
 
 console.log('core tests passed');
