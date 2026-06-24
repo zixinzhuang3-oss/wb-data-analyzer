@@ -1,6 +1,7 @@
 import { toProfitRub } from './currency.js';
 import { hasValidBusinessData } from './excel.js';
 import { addDays as addDateDays, normalizeDateKey } from './date.js';
+import { CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID } from './actions.js';
 
 const METRICS = {
   totalOrders: '订单量',
@@ -22,6 +23,7 @@ const METRICS = {
 
 const ADVICE_TYPES = [
   '保持当前策略', '降低搜索出价', '降低推荐位预算', '暂停广告', '加大预算', '提高出价', '优化主图',
+  '暂停搜索位',
   '优化标题关键词', '降价或参加活动', '控制广告花费', '补货', '观察1天', '恢复小预算搜索广告', '暂停推荐位', '保留CPC暂停CPM推荐', '保留CPM推荐', '关闭CPM推荐',
 ];
 
@@ -30,6 +32,45 @@ const number = (value) => Number(value) || 0;
 const pct = (value) => `${((value || 0) * 100).toFixed(1)}%`;
 const signedPct = (value) => `${value >= 0 ? '+' : ''}${((value || 0) * 100).toFixed(1)}%`;
 const money = (value) => new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(value || 0);
+
+const reducedBid = (current, min, pct = 0.15) => Math.max(min, Math.round(current * (1 - pct)));
+const cpmMinBidHint = `CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}`;
+
+const cpmBidContext = (action = {}) => {
+  const position = action?.cpmPosition || action?.adPosition || '';
+  const bidType = action?.cpmBidType || '手动出价';
+  const hasSearch = ['仅搜索', '搜索', '搜索+推荐'].includes(position);
+  const hasRecommend = ['仅推荐', '推荐', '搜索+推荐'].includes(position);
+  const unified = bidType === '统一出价';
+  const unifiedBid = number(action?.cpmUnifiedBid);
+  return {
+    position,
+    bidType,
+    unified,
+    hasSearch,
+    hasRecommend,
+    searchBid: unified ? unifiedBid : number(action?.cpmSearchBid || action?.searchBid),
+    recommendBid: unified ? unifiedBid : number(action?.cpmRecommendBid || action?.recommendBid),
+    unifiedBid,
+    unifiedMinBid: hasSearch ? CPM_SEARCH_MIN_BID : CPM_RECOMMEND_MIN_BID,
+  };
+};
+
+const cpmSearchCostAdvice = (sku, ctx) => {
+  if (ctx.unified) {
+    if (ctx.unifiedBid > ctx.unifiedMinBid) return makeRecommendation('降低搜索出价', `${sku} CPM 使用统一出价且覆盖搜索位，当前统一出价 ${ctx.unifiedBid}，表现差时可下调 10%–20%，建议先降至 ${reducedBid(ctx.unifiedBid, ctx.unifiedMinBid)}，最低不能低于 ${ctx.unifiedMinBid}。${cpmMinBidHint}。`, '高');
+    return makeRecommendation('控制广告花费', `${sku} 当前 CPM 统一出价已是搜索最低 ${CPM_SEARCH_MIN_BID}，无法继续降低统一出价。建议降低每日预算或观察 1 天，如仍亏损则暂停搜索位，并优化主图、价格、关键词、评价。${cpmMinBidHint}。`, '高');
+  }
+  if (ctx.searchBid > CPM_SEARCH_MIN_BID) return makeRecommendation('降低搜索出价', `${sku} CPM 搜索出价 ${ctx.searchBid} 高于最低 ${CPM_SEARCH_MIN_BID}，表现差可降低 10%–20%，建议先降至 ${reducedBid(ctx.searchBid, CPM_SEARCH_MIN_BID)}，但不能低于 ${CPM_SEARCH_MIN_BID}。${cpmMinBidHint}。`, '高');
+  return makeRecommendation('控制广告花费', `${sku} 当前 CPM 搜索出价已是最低 ${CPM_SEARCH_MIN_BID}，无法继续降低出价。建议保持最低搜索出价观察 1 天，优先降低每日预算；如仍亏损则暂停搜索位，并优化主图、价格、关键词、评价；若搜索有订单但利润差，优先控制预算而不是降低出价。${cpmMinBidHint}。`, '高');
+};
+
+const cpmRecommendCostAdvice = (sku, ctx) => {
+  const minBid = ctx.unified ? ctx.unifiedMinBid : CPM_RECOMMEND_MIN_BID;
+  const bid = ctx.unified ? ctx.unifiedBid : ctx.recommendBid;
+  if (bid > minBid) return makeRecommendation('降低推荐位预算', `${sku} CPM 推荐出价 ${bid} 高于最低 ${minBid}，表现差可降低 10%–20%，建议先降至 ${reducedBid(bid, minBid)}，但不能低于 ${minBid}。${cpmMinBidHint}。`, '高');
+  return makeRecommendation('暂停推荐位', `${sku} 当前 CPM 推荐出价已是最低 ${CPM_RECOMMEND_MIN_BID}，无法继续降低出价。建议保持最低推荐出价观察 1 天，降低推荐预算或暂停推荐位，只保留搜索位观察；若推荐曝光高但订单差，优先暂停推荐而不是继续降出价。${cpmMinBidHint}。`, '高');
+};
 
 const enrichRecord = (record) => {
   const revenue = number(record.revenue);
@@ -141,6 +182,13 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
   const adStatus = latestAction?.adStatus || today.adStatus || (today.adSpend > 0 || today.adClicks > 0 || today.adImpressions > 0 ? '仅 CPM' : '无广告');
   const adMode = latestAction?.adMode || adStatus;
   const recommendRaised = hasCpmRecommend && bidIncreased;
+  const cpmCtx = cpmBidContext(latestAction);
+  const bothCpmAtMin = hasCpmSearch && hasCpmRecommend && ((cpmCtx.unified && cpmCtx.unifiedBid <= CPM_SEARCH_MIN_BID) || (!cpmCtx.unified && cpmCtx.searchBid <= CPM_SEARCH_MIN_BID && cpmCtx.recommendBid <= CPM_RECOMMEND_MIN_BID));
+  const cpmPoor = profit < 0 || (spendDelta > 0.1 && orderDelta <= 0.05) || (metrics.totalOrders.today <= 1 && metrics.adSpend.today > metrics.adSpend.last3Avg);
+
+  if (bothCpmAtMin && cpmPoor) {
+    recommendations.push(makeRecommendation('控制广告花费', `${sku} CPM 搜索和推荐均已在最低出价（搜索 ${CPM_SEARCH_MIN_BID}、推荐 ${CPM_RECOMMEND_MIN_BID}），广告表现差时不要继续降出价。建议降低整体预算，或暂停表现更差的位置。${cpmMinBidHint}。`, '高'));
+  }
 
   if (bidIncreased && spendDelta > 0.1 && orderDelta <= 0.05 && profitDelta < 0) {
     effects.push({ level: '差', text: `${sku} 提高出价后广告费${signedPct(spendDelta)}，订单未增长，利润下降 ${money(Math.abs(profitDelta))}，动作效果差。` });
@@ -171,20 +219,20 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
   if (hasCpmSearch) {
     if (exposure > 1000 && metrics.ctr.today < 0.01) recommendations.push(makeRecommendation('优化主图', `${sku} CPM搜索曝光高但 CTR 仅 ${pct(metrics.ctr.today)}，建议优化主图、标题和价格。`, '高'));
     if (metrics.ctr.today >= 0.01 && cvr < 0.02) recommendations.push(makeRecommendation('降价或参加活动', `${sku} CPM搜索点击率正常但转化率低，建议优化价格、评价和详情页。`, '中'));
-    if (spendDelta > 0.1 && orderDelta <= 0.05) recommendations.push(makeRecommendation('降低搜索出价', `${sku} CPM搜索广告费上涨但订单未增长，建议降低搜索出价 10%–20%。`, '高'));
+    if (spendDelta > 0.1 && orderDelta <= 0.05) recommendations.push(cpmSearchCostAdvice(sku, cpmCtx));
   }
 
   if (hasCpmRecommend) {
     if (metrics.impressions.todayVsYesterday.rate > 0.1 && ctrDelta < -0.1) {
       risks.push(`${sku} 推荐流量质量差。`);
-      recommendations.push(makeRecommendation('降低推荐位预算', `${sku} CPM推荐曝光增加但 CTR 下降，建议降低推荐位预算或推荐出价。`, '高'));
+      recommendations.push(cpmRecommendCostAdvice(sku, cpmCtx));
     }
     if (metrics.adSpend.today > metrics.adSpend.last3Avg && metrics.totalOrders.today <= 1) recommendations.push(makeRecommendation('暂停推荐位', `${sku} CPM推荐花费高、订单少，建议暂停推荐位，只保留搜索位观察。`, '高'));
     if (roi > 2 && profit > 0 && metrics.totalOrders.today > 0) recommendations.push(makeRecommendation('保持当前策略', `${sku} CPM推荐带来订单且 ROI 为正，可保留推荐位预算。`, '中'));
   }
 
   if (!cpcOn && hasCpmRecommend && !hasCpmSearch) {
-    if (exposure > 1000 && metrics.ctr.today < 0.01) recommendations.push(makeRecommendation('暂停推荐位', `${sku} 只开 CPM 推荐但曝光高、点击率低，建议降低推荐出价或暂停推荐，并考虑恢复低预算搜索广告。`, '高'));
+    if (exposure > 1000 && metrics.ctr.today < 0.01) recommendations.push(makeRecommendation('暂停推荐位', `${sku} 只开 CPM 推荐但曝光高、点击率低。${cpmCtx.recommendBid <= CPM_RECOMMEND_MIN_BID ? `当前 CPM 推荐出价已是最低 ${CPM_RECOMMEND_MIN_BID}，无法继续降低出价，建议暂停推荐或降低推荐预算，并考虑恢复低预算搜索广告。${cpmMinBidHint}。` : `建议降低推荐出价至不低于 ${CPM_RECOMMEND_MIN_BID} 或暂停推荐，并考虑恢复低预算搜索广告。${cpmMinBidHint}。`}`, '高'));
     if (metrics.totalOrders.today > 0 && roi > 1 && profit > 0) recommendations.push(makeRecommendation('保持当前策略', `${sku} 只开 CPM 推荐且订单稳定、ROI 为正，建议继续保留推荐位，暂不加大预算，观察 1 天。`, '中'));
   }
 
