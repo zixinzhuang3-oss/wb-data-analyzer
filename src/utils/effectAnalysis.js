@@ -1,7 +1,7 @@
 import { toProfitRub } from './currency.js';
 import { hasValidBusinessData } from './excel.js';
 import { addDays as addDateDays, normalizeDateKey } from './date.js';
-import { CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID } from './actions.js';
+import { buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, getActionRecord, normalizeAction, normalizeSku } from './actions.js';
 
 const METRICS = {
   totalOrders: '订单量',
@@ -123,7 +123,7 @@ const buildMetricSnapshot = (todayRecord, yesterdayRecord, last3, last7, before3
   }]));
 };
 
-const actionForDate = (actionsByKey, date, sku) => actionsByKey.get(`${normalizeDateKey(date)}__${sku}`);
+const actionForDate = (actions, date, sku) => getActionRecord(actions, date, sku);
 const noDataRecommendation = (sku, hasPreviousAction) => makeRecommendation('观察1天', hasPreviousAction
   ? `${sku} 已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。`
   : `${sku} 当前时间段暂无有效数据，无法生成策略建议。`, '低');
@@ -284,19 +284,23 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
 };
 
 export const buildEffectAnalysis = (records = [], actions = [], filters = {}) => {
-  const actionsByKey = new Map(actions.map((action) => [`${normalizeDateKey(action.date)}__${action.sku}`, { ...action, date: normalizeDateKey(action.date), uniqueKey: `${normalizeDateKey(action.date)}__${action.sku}` }]));
+  const normalizedActions = actions.map((action) => normalizeAction(action));
   const bySku = new Map();
   const candidateSkus = new Set();
   records.forEach((record) => {
     if (!record.date || !record.sku) return;
-    if (filters.sku && record.sku !== filters.sku) return;
-    candidateSkus.add(record.sku);
+    const recordSku = normalizeSku(record.sku);
+    const filterSku = normalizeSku(filters.sku);
+    if (filterSku && recordSku !== filterSku) return;
+    candidateSkus.add(recordSku);
     if (!hasValidBusinessData(record)) return;
-    if (!bySku.has(record.sku)) bySku.set(record.sku, []);
-    bySku.get(record.sku).push(record);
+    if (!bySku.has(recordSku)) bySku.set(recordSku, []);
+    bySku.get(recordSku).push({ ...record, date: normalizeDateKey(record.date), sku: recordSku });
   });
   actions.forEach((action) => {
-    if (action.sku && (!filters.sku || action.sku === filters.sku)) candidateSkus.add(action.sku);
+    const actionSku = normalizeSku(action.sku);
+    const filterSku = normalizeSku(filters.sku);
+    if (actionSku && (!filterSku || actionSku === filterSku)) candidateSkus.add(actionSku);
   });
 
   const analyses = [...candidateSkus].map((sku) => {
@@ -307,18 +311,18 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const today = exactToday || (!targetDate ? inRange.at(-1) || sorted.at(-1) : null);
     const requiredActionDate = targetDate ? addDateDays(targetDate, -1) : '';
     const missingCurrentData = !today || (targetDate && !exactToday);
-    const latestActionForMissing = requiredActionDate ? actionForDate(actionsByKey, requiredActionDate, sku) || null : null;
+    const latestActionForMissing = requiredActionDate ? actionForDate(normalizedActions, requiredActionDate, sku) || null : null;
     if (missingCurrentData) {
       const recommendation = noDataRecommendation(sku, Boolean(latestActionForMissing));
       return {
         sku,
         date: targetDate || '',
-        uniqueKey: targetDate ? `${targetDate}__${sku}` : '',
+        uniqueKey: targetDate ? buildActionKey(targetDate, sku) : '',
         latestAction: latestActionForMissing,
         previousAction: null,
         metrics: buildMetricSnapshot({}, {}, {}, {}, {}, {}),
         noValidData: true,
-        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || requiredActionDate, sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), noValidData: true },
+        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || requiredActionDate, sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), lookupKey: buildActionKey(requiredActionDate, sku), noValidData: true },
         primaryRecommendation: recommendation,
         recommendations: [recommendation],
         risks: [],
@@ -330,11 +334,11 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const yesterday = sorted.find((record) => record.date === yesterdayDate) || sorted[todayIndex - 1] || {};
     const last3Rows = sorted.slice(Math.max(0, todayIndex - 2), todayIndex + 1);
     const last7Rows = sorted.slice(Math.max(0, todayIndex - 6), todayIndex + 1);
-    const latestAction = actionForDate(actionsByKey, requiredActionDate, sku) || null;
+    const latestAction = actionForDate(normalizedActions, requiredActionDate, sku) || null;
     const actionDate = requiredActionDate;
     const before3Rows = sorted.filter((record) => record.date < actionDate).slice(-3);
     const after3Rows = sorted.filter((record) => record.date >= actionDate).slice(0, 3);
-    const previousAction = actions.filter((action) => action.sku === sku && action.date < actionDate).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+    const previousAction = normalizedActions.filter((action) => normalizeSku(action.sku) === sku && normalizeDateKey(action.date) < actionDate).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
     const metrics = buildMetricSnapshot(today, yesterday, averageRecords(last3Rows), averageRecords(last7Rows), averageRecords(before3Rows), averageRecords(after3Rows));
     const ruleResult = latestAction
       ? analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) })
@@ -355,6 +359,7 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
         sku,
         source: latestAction?.source || 'IndexedDB 动作记录',
         found: Boolean(latestAction),
+        lookupKey: buildActionKey(requiredActionDate, sku),
       },
       primaryRecommendation: ruleResult.recommendations[0],
       recommendations: ruleResult.recommendations,

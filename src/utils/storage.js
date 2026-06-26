@@ -1,4 +1,4 @@
-import { normalizeAction, mergeActionRecords } from './actions.js';
+import { buildActionKey, normalizeAction, mergeActionRecords, normalizeSku } from './actions.js';
 import { normalizeDateKey } from './date.js';
 
 const DB_NAME = 'wb-daily-ops-review';
@@ -48,7 +48,7 @@ const getAllFromStore = async (storeName) => {
 
 const normalizeRecord = (record) => {
   const date = normalizeDateKey(record.date);
-  const sku = String(record.sku || '').trim();
+  const sku = normalizeSku(record.sku);
   return { ...record, date, sku, uniqueKey: `${date}__${sku}` };
 };
 
@@ -77,7 +77,12 @@ export const saveRecords = async (records) => {
 };
 
 export const getAllRecords = () => getAllFromStore(RECORD_STORE);
-export const getAllActions = () => getAllFromStore(ACTION_STORE);
+export const getAllActions = async () => {
+  const rows = (await getAllFromStore(ACTION_STORE)).map(normalizeAction);
+  const deduped = new Map();
+  rows.forEach((action) => deduped.set(action.uniqueKey, action));
+  return [...deduped.values()].sort((a, b) => `${b.date}${b.sku}`.localeCompare(`${a.date}${a.sku}`));
+};
 export const getAllRecommendationHistory = () => getAllFromStore(RECOMMENDATION_STORE);
 
 export const saveAction = async (action) => {
@@ -91,7 +96,13 @@ export const saveAction = async (action) => {
 export const deleteAction = async (uniqueKey) => {
   const db = await openDb();
   const transaction = db.transaction(ACTION_STORE, 'readwrite');
-  transaction.objectStore(ACTION_STORE).delete(uniqueKey);
+  const store = transaction.objectStore(ACTION_STORE);
+  const separator = String(uniqueKey).includes('__') ? '__' : '_';
+  const [date = '', sku = ''] = String(uniqueKey || '').split(separator);
+  const normalizedKey = buildActionKey(date, sku);
+  store.delete(uniqueKey);
+  store.delete(normalizedKey);
+  store.delete(`${normalizeDateKey(date)}__${normalizeSku(sku)}`);
   await txDone(transaction);
   db.close();
 };
@@ -139,7 +150,7 @@ export const saveExcelActions = async (actions = []) => {
 
 const normalizeRecommendation = (item) => {
   const date = normalizeDateKey(item.date);
-  const sku = String(item.sku || '').trim();
+  const sku = normalizeSku(item.sku);
   const type = item.recommendationType || item.type || item.id || 'unknown';
   return { ...item, date, sku, uniqueKey: item.uniqueKey || `${date}__${sku}__${type}` };
 };

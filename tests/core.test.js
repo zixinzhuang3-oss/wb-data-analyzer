@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { buildSheetDiagnostics, hasEffectiveDailyData, normalizeSheetRow, toIsoDate, toNumber } from '../src/utils/excel.js';
-import { parseOperationActionText, normalizeAction, actionToSummary, mergeActionRecords, shouldReplaceAction, validateCpmMinBids } from '../src/utils/actions.js';
+import { parseOperationActionText, normalizeAction, actionToSummary, buildActionKey, getActionRecord, mergeActionRecords, normalizeDate, normalizeSku, shouldReplaceAction, validateCpmMinBids } from '../src/utils/actions.js';
 import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
 import { addDays, buildQuickRange, formatDateInTimeZone, getTodayDate } from '../src/utils/date.js';
@@ -113,8 +113,8 @@ const sequenceA = mergeActionRecords([], [yesterdayJsonAction]);
 const sequenceAFinal = mergeActionRecords(sequenceA.actions, [todayExcelAction]);
 const sequenceB = mergeActionRecords([], [todayExcelAction]);
 const sequenceBFinal = mergeActionRecords(sequenceB.actions, [yesterdayJsonAction]);
-assert.equal(sequenceAFinal.actions.find((item) => item.uniqueKey === '2026-06-22__ES920E')?.source, 'json_import');
-assert.equal(sequenceBFinal.actions.find((item) => item.uniqueKey === '2026-06-22__ES920E')?.source, 'json_import');
+assert.equal(sequenceAFinal.actions.find((item) => item.uniqueKey === '2026-06-22_ES920E')?.source, 'json_import');
+assert.equal(sequenceBFinal.actions.find((item) => item.uniqueKey === '2026-06-22_ES920E')?.source, 'json_import');
 assert.deepEqual(new Set(sequenceAFinal.actions.map((item) => item.uniqueKey)), new Set(sequenceBFinal.actions.map((item) => item.uniqueKey)));
 
 const manualAction = normalizeAction({ date: '2026-06-23', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 35, cpmEnabled: '关闭', source: 'manual', updatedAt: '2026-06-23T10:00:00.000Z' });
@@ -134,14 +134,14 @@ assert.equal(shouldReplaceAction(newerSamePriorityJsonAction, olderJsonAction), 
 assert.equal(mergeActionRecords([olderJsonAction], [newerSamePriorityJsonAction]).actions[0].cpcSearchBid, 12);
 
 const localOnlyAction = normalizeAction({ date: '2026-06-21', sku: 'LOCAL', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'manual' });
-assert.equal(mergeActionRecords([localOnlyAction], [yesterdayJsonAction]).actions.some((item) => item.uniqueKey === '2026-06-21__LOCAL'), true);
+assert.equal(mergeActionRecords([localOnlyAction], [yesterdayJsonAction]).actions.some((item) => item.uniqueKey === '2026-06-21_LOCAL'), true);
 
 const exactPreviousActionAnalysis = buildEffectAnalysis([
-  { date: '2026-06-22', sku: 'ES920E', uniqueKey: '2026-06-22__ES920E', totalOrders: 1, adSpend: 10, revenue: 100, profit: 10 },
-  { date: '2026-06-23', sku: 'ES920E', uniqueKey: '2026-06-23__ES920E', totalOrders: 2, adSpend: 20, revenue: 200, profit: 20 },
+  { date: '2026-06-22', sku: 'ES920E', uniqueKey: '2026-06-22_ES920E', totalOrders: 1, adSpend: 10, revenue: 100, profit: 10 },
+  { date: '2026-06-23', sku: 'ES920E', uniqueKey: '2026-06-23_ES920E', totalOrders: 2, adSpend: 20, revenue: 200, profit: 20 },
 ], [yesterdayJsonAction], { date: '2026-06-23', sku: 'ES920E' })[0];
 assert.equal(exactPreviousActionAnalysis.actionMeta.requiredActionDate, '2026-06-22');
-assert.equal(exactPreviousActionAnalysis.latestAction.uniqueKey, '2026-06-22__ES920E');
+assert.equal(exactPreviousActionAnalysis.latestAction.uniqueKey, '2026-06-22_ES920E');
 
 const exactMissingActionAnalysis = buildEffectAnalysis([
   { date: '2026-06-22', sku: 'ES921E', uniqueKey: '2026-06-22__ES921E', totalOrders: 1, adSpend: 0, revenue: 100, profit: 10 },
@@ -152,12 +152,39 @@ assert.match(exactMissingActionAnalysis.primaryRecommendation.reason, /未找到
 assert.doesNotMatch(exactMissingActionAnalysis.primaryRecommendation.reason, /CPC|CPM|无广告/);
 
 const slashDateAction = normalizeAction({ date: '2026/06/22', sku: 'ES922E', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'json_import' });
-assert.equal(slashDateAction.uniqueKey, '2026-06-22__ES922E');
+assert.equal(slashDateAction.uniqueKey, '2026-06-22_ES922E');
 const serialDateAction = normalizeAction({ date: toIsoDate(46191, XLSX), sku: 'ES923E', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'json_import' });
-assert.equal(serialDateAction.uniqueKey, '2026-06-18__ES923E');
-const exportedLike = { records: [{ date: '2026-06-23', sku: 'ES920E', uniqueKey: '2026-06-23__ES920E' }], actionRecords: [yesterdayJsonAction], recommendationHistory: [{ date: '2026-06-23', sku: 'ES920E', recommendationType: '观察1天' }], settings: {}, exportedAt: '2026-06-23T00:00:00.000Z' };
+assert.equal(serialDateAction.uniqueKey, '2026-06-18_ES923E');
+const exportedLike = { records: [{ date: '2026-06-23', sku: 'ES920E', uniqueKey: '2026-06-23_ES920E' }], actionRecords: [yesterdayJsonAction], recommendationHistory: [{ date: '2026-06-23', sku: 'ES920E', recommendationType: '观察1天' }], settings: {}, exportedAt: '2026-06-23T00:00:00.000Z' };
 assert.equal(exportedLike.actionRecords.length, 1);
-assert.equal(mergeActionRecords([], exportedLike.actionRecords).actions[0].uniqueKey, '2026-06-22__ES920E');
+assert.equal(mergeActionRecords([], exportedLike.actionRecords).actions[0].uniqueKey, '2026-06-22_ES920E');
+
+
+
+// Unified action record lookup must match the Daily Action form and strategy analysis board.
+const formSavedAction = normalizeAction({ date: '2026/06/22', sku: ' ES920E ', cpcEnabled: '开启', cpcSearchBid: 28, cpmEnabled: '关闭', source: 'manual' });
+const sharedActionSource = [formSavedAction];
+assert.equal(normalizeDate('2026/06/22'), '2026-06-22');
+assert.equal(normalizeDate('2026-06-22'), '2026-06-22');
+assert.equal(normalizeSku(' es920e '), 'ES920E');
+assert.equal(buildActionKey('2026/06/22', ' es920e '), '2026-06-22_ES920E');
+assert.equal(getActionRecord(sharedActionSource, '2026-06-22', 'ES920E')?.uniqueKey, formSavedAction.uniqueKey);
+assert.equal(getActionRecord(sharedActionSource, '2026/06/22', ' es920e ')?.uniqueKey, formSavedAction.uniqueKey);
+const sharedLookupAnalysis = buildEffectAnalysis([
+  { date: '2026-06-22', sku: 'ES920E', uniqueKey: '2026-06-22__ES920E', totalOrders: 1, adSpend: 10, revenue: 100, profit: 10, hasValidBusinessData: true },
+  { date: '2026-06-23', sku: ' es920e ', uniqueKey: '2026-06-23__ES920E', totalOrders: 2, adSpend: 20, revenue: 220, profit: 25, hasValidBusinessData: true },
+], sharedActionSource, { date: '2026-06-23', sku: ' es920e ' })[0];
+assert.equal(sharedLookupAnalysis.actionMeta.analysisDate, '2026-06-23');
+assert.equal(sharedLookupAnalysis.actionMeta.requiredActionDate, '2026-06-22');
+assert.equal(sharedLookupAnalysis.actionMeta.lookupKey, '2026-06-22_ES920E');
+assert.equal(sharedLookupAnalysis.actionMeta.found, true);
+assert.equal(sharedLookupAnalysis.actionMeta.source, 'manual');
+assert.equal(sharedLookupAnalysis.latestAction.uniqueKey, formSavedAction.uniqueKey);
+const debugMissingAnalysis = buildEffectAnalysis([
+  { date: '2026-06-23', sku: 'ES999E', uniqueKey: '2026-06-23__ES999E', totalOrders: 1, adSpend: 0, revenue: 100, profit: 10, hasValidBusinessData: true },
+], [], { date: '2026-06-23', sku: 'ES999E' })[0];
+assert.equal(debugMissingAnalysis.actionMeta.found, false);
+assert.equal(debugMissingAnalysis.actionMeta.lookupKey, '2026-06-22_ES999E');
 
 const rangeRecords = [
   { date: '2026-06-10', sku: 'ES035BK', uniqueKey: '2026-06-10__ES035BK', totalOrders: 1, adSpend: 10, adImpressions: 100, adClicks: 10, revenue: 100, profit: 10 },
