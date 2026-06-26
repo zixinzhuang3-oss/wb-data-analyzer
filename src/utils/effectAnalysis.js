@@ -193,20 +193,22 @@ const buildActionJudgement = (action, windows, nearby = []) => {
 };
 
 export const buildSkuActionHistory = (records = [], actions = [], sku = '', endDate = '', days = ACTION_HISTORY_DAYS) => {
-  const targetDate = normalizeDateKey(endDate || records.map((r) => normalizeDateKey(r.date)).sort().at(-1) || '');
+  const recordList = Array.isArray(records) ? records : [];
+  const actionList = Array.isArray(actions) ? actions : [];
+  const targetDate = normalizeDateKey(endDate || recordList.map((r) => normalizeDateKey(r.date)).filter(Boolean).sort().at(-1) || '');
   const fromDate = targetDate ? addDateDays(targetDate, -(days - 1)) : '';
-  const normalizedRecords = records.map((r) => ({ ...r, date: normalizeDateKey(r.date), sku: normalizeSku(r.sku) })).filter((r) => !sku || r.sku === normalizeSku(sku)).sort((a, b) => a.date.localeCompare(b.date));
-  const explicit = getSkuActionTimeline(actions, sku, { fromDate, toDate: targetDate }).map((action) => ({ type: 'explicit', action }));
+  const normalizedRecords = recordList.map((r) => ({ ...r, date: normalizeDateKey(r.date), sku: normalizeSku(r.sku) })).filter((r) => r.date && (!sku || r.sku === normalizeSku(sku))).sort((a, b) => a.date.localeCompare(b.date));
+  const explicit = getSkuActionTimeline(actionList, sku, { fromDate, toDate: targetDate }).map((action) => ({ type: 'explicit', action }));
   const explicitDates = new Set(explicit.map((row) => row.action.date));
   const inherited = normalizedRecords
     .filter((record) => record.date >= fromDate && record.date <= targetDate && !explicitDates.has(record.date))
-    .map((record) => ({ type: 'inherited', effective: getEffectiveAction(actions, record.date, sku), record }))
+    .map((record) => ({ type: 'inherited', effective: getEffectiveAction(actionList, record.date, sku), record }))
     .filter((row) => row.effective.found && row.effective.isInherited)
     .map((row) => ({ type: 'inherited', action: row.effective.action, sourceActionDate: row.effective.sourceActionDate }));
   return [...explicit, ...inherited].map((entry) => {
     const action = entry.action;
     const windows = buildActionWindows(normalizedRecords, action.date);
-    const nearby = getSkuActionTimeline(actions, action.sku, { fromDate: addDateDays(action.date, -2), toDate: addDateDays(action.date, 2) });
+    const nearby = getSkuActionTimeline(actionList, action.sku, { fromDate: addDateDays(action.date, -2), toDate: addDateDays(action.date, 2) });
     return { action, date: action.date, sku: action.sku, type: entry.type, sourceActionDate: entry.sourceActionDate || action.sourceActionDate || action.date, summary: entry.type === 'inherited' ? `继承 ${entry.sourceActionDate || action.sourceActionDate}` : actionToSummary(action), windows, judgement: entry.type === 'inherited' ? `自动继承动作：沿用 ${entry.sourceActionDate || action.sourceActionDate}。` : buildActionJudgement(action, windows, nearby) };
   }).sort((a, b) => b.date.localeCompare(a.date));
 };
@@ -371,20 +373,23 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
 };
 
 export const buildEffectAnalysis = (records = [], actions = [], filters = {}) => {
-  const normalizedActions = actions.map((action) => normalizeAction(action));
+  const recordList = Array.isArray(records) ? records : [];
+  const actionList = Array.isArray(actions) ? actions : [];
+  const normalizedActions = actionList.map((action) => normalizeAction(action)).filter((action) => action.date && action.sku);
   const bySku = new Map();
   const candidateSkus = new Set();
-  records.forEach((record) => {
-    if (!record.date || !record.sku) return;
+  recordList.forEach((record) => {
+    const recordDate = normalizeDateKey(record.date);
+    if (!recordDate || !record.sku) return;
     const recordSku = normalizeSku(record.sku);
     const filterSku = normalizeSku(filters.sku);
     if (filterSku && recordSku !== filterSku) return;
     candidateSkus.add(recordSku);
     if (!hasValidBusinessData(record)) return;
     if (!bySku.has(recordSku)) bySku.set(recordSku, []);
-    bySku.get(recordSku).push({ ...record, date: normalizeDateKey(record.date), sku: recordSku });
+    bySku.get(recordSku).push({ ...record, date: recordDate, sku: recordSku });
   });
-  actions.forEach((action) => {
+  actionList.forEach((action) => {
     const actionSku = normalizeSku(action.sku);
     const filterSku = normalizeSku(filters.sku);
     if (actionSku && (!filterSku || actionSku === filterSku)) candidateSkus.add(actionSku);

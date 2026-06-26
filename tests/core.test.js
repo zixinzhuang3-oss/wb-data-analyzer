@@ -37,6 +37,27 @@ const fallbackToday = await getTodayDate({ timeZone: 'Asia/Shanghai', fetchImpl:
 assert.match(fallbackToday.date, /^\d{4}-\d{2}-\d{2}$/);
 assert.equal(fallbackToday.source, '浏览器本地时间');
 
+const invalidDateEffective = getEffectiveAction([], 'invalid-date', 'ES920E');
+assert.equal(invalidDateEffective.action, null);
+assert.equal(invalidDateEffective.found, false);
+assert.doesNotThrow(() => getEffectiveAction(null, '2026-06-23', 'ES920E'));
+assert.doesNotThrow(() => getEffectiveAction(undefined, '2026-06-23', 'ES920E'));
+assert.doesNotThrow(() => getEffectiveAction([], null, 'ES920E'));
+assert.doesNotThrow(() => getEffectiveAction([], undefined, 'ES920E'));
+assert.doesNotThrow(() => getEffectiveAction([], 'invalid-date', 'ES920E'));
+assert.equal(getEffectiveAction([], '2026-06-23', 'ES920E').found, false);
+const dirtyActionRecords = [
+  { date: 'not-a-date', sku: 'ES920E', cpcEnabled: '开启', cpcSearchBid: 99, source: 'manual' },
+  normalizeAction({ date: '2026-06-22', sku: 'ES920E', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'manual' }),
+];
+const dirtyLookup = getEffectiveAction(dirtyActionRecords, '2026-06-23', 'ES920E');
+assert.equal(dirtyLookup.found, true);
+assert.equal(dirtyLookup.sourceActionDate, '2026-06-22');
+assert.doesNotThrow(() => buildEffectAnalysis([], [], {}));
+assert.deepEqual(buildEffectAnalysis(null, null, {}), []);
+assert.doesNotThrow(() => buildSkuActionHistory([], [], 'ES920E', '2026-06-23'));
+assert.deepEqual(buildSkuActionHistory(null, null, 'ES920E', '2026-06-23'), []);
+
 const scenarios = [
   ['只开 CPC 搜索', 'CPC=开启；CPC搜索出价=25；CPC预算=300；CPM=关闭；预算动作=保持预算；备注=CPC搜索保量', { adStatus: '仅 CPC', cpcEnabled: '开启', cpmEnabled: '关闭', cpcSearchBid: 25, cpcDailyBudget: 300 }],
   ['只开 CPM 搜索', 'CPC=关闭；CPM=开启；CPM位置=仅搜索；CPM出价方式=手动出价；CPM搜索出价=620；CPM预算=400；预算动作=保持预算；备注=搜索控费', { adStatus: '仅 CPM', cpmPosition: '仅搜索', cpmSearchBid: 620, cpmRecommendBid: '' }],
