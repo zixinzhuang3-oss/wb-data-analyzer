@@ -1,5 +1,13 @@
 import { normalizeDateKey } from './date.js';
 
+export const normalizeDate = (date) => normalizeDateKey(date);
+export const normalizeSku = (sku) => String(sku || '').trim().toUpperCase();
+export const buildActionKey = (date, sku) => `${normalizeDate(date)}_${normalizeSku(sku)}`;
+export const getActionRecord = (actions = [], date = '', sku = '') => {
+  const key = buildActionKey(date, sku);
+  return actions.find((action) => action?.uniqueKey === key || buildActionKey(action?.date, action?.sku) === key) || null;
+};
+
 export const OVERALL_AD_STATUS_OPTIONS = ['无广告', '仅 CPC', '仅 CPM', 'CPC+CPM'];
 export const AD_STATUS_OPTIONS = OVERALL_AD_STATUS_OPTIONS;
 export const BOOLEAN_STATUS_OPTIONS = ['开启', '关闭'];
@@ -158,11 +166,11 @@ export const applyAdRules = (action) => {
 export const normalizeAction = (action) => {
   const aliased = normalizeActionAliases(action);
   const date = normalizeDateKey(aliased.date);
-  const sku = String(aliased.sku || '').trim();
+  const sku = normalizeSku(aliased.sku);
   const sourceAlias = { 'Excel 自动识别': 'excel_auto', 手动填写: 'manual', 手动修改: 'manual_modified', 'JSON 导入': 'json_import' };
   const normalized = { ...createEmptyAction(), ...aliased, date, sku, source: sourceAlias[aliased.source] || aliased.source || 'manual' };
   numberFields.forEach((field) => { if (field in normalized) normalized[field] = toNumberOrEmpty(normalized[field]); });
-  return { ...applyAdRules(normalized), uniqueKey: `${date}__${sku}`, updatedAt: normalized.updatedAt || new Date().toISOString() };
+  return { ...applyAdRules(normalized), uniqueKey: buildActionKey(date, sku), updatedAt: normalized.updatedAt || new Date().toISOString() };
 };
 
 export const shouldReplaceAction = (incoming = {}, existing = {}) => {

@@ -3,7 +3,7 @@ import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup,
 import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
-import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, createEmptyAction, getCpmMinBidForAction, normalizeAction, validateCpmMinBids } from './utils/actions.js';
+import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, buildActionKey, createEmptyAction, getActionRecord, getCpmMinBidForAction, normalizeAction, validateCpmMinBids } from './utils/actions.js';
 import { buildEffectAnalysis, metricLabels } from './utils/effectAnalysis.js';
 import { buildQuickRange, getTodayDate } from './utils/date.js';
 import { toProfitCny, toProfitRub } from './utils/currency.js';
@@ -169,10 +169,9 @@ function renderHistoryCards(records) {
 
 function renderTable(records) {
   if (!records.length) return '<p class="empty-state">当前时间段无数据</p>';
-  const actions = actionMap();
   const header = `<th>详情/动作</th>${displayFields.map((key) => `<th>${fieldLabels[key]}</th>`).join('')}<th>结构化动作</th>`;
   const rows = records.map((record) => {
-    const action = actions.get(record.uniqueKey);
+    const action = getActionRecord(state.actions, record.date, record.sku);
     return `<tr>
       <td><button class="table-action" data-detail-key="${html(record.uniqueKey)}" type="button">查看详情</button></td>
       ${displayFields.map((key) => `<td>${renderValue(key, record[key])}</td>`).join('')}
@@ -184,19 +183,23 @@ function renderTable(records) {
 
 
 const actionMap = () => new Map(state.actions.map((action) => [action.uniqueKey, action]));
+const findAction = (date, sku) => getActionRecord(state.actions, date, sku);
 
-const getCurrentActionKey = () => `${state.actionDraft.date || ''}__${state.actionDraft.sku || ''}`;
+const getCurrentActionKey = () => buildActionKey(state.actionDraft.date || '', state.actionDraft.sku || '');
 
 const setActionDraftFromKey = (uniqueKey) => {
-  const action = actionMap().get(uniqueKey);
   const record = state.records.find((item) => item.uniqueKey === uniqueKey);
-  const [date = '', sku = ''] = uniqueKey.split('__');
-  state.actionDraft = action ? { ...action } : createEmptyAction(record?.date || date, record?.sku || sku);
+  const separator = uniqueKey.indexOf('__') >= 0 ? '__' : '_';
+  const [date = '', sku = ''] = uniqueKey.split(separator);
+  const lookupDate = record?.date || date;
+  const lookupSku = record?.sku || sku;
+  const action = findAction(lookupDate, lookupSku);
+  state.actionDraft = action ? { ...action } : createEmptyAction(lookupDate, lookupSku);
 };
 
 async function handleActionSave() {
   const currentKey = getCurrentActionKey();
-  const existing = actionMap().get(currentKey);
+  const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku);
   const action = normalizeAction({ ...state.actionDraft, source: existing ? 'manual_modified' : 'manual' });
   if (!action.date || !action.sku) {
     state.status = '动作保存失败：请先选择日期和 SKU。';
@@ -218,14 +221,15 @@ async function handleActionSave() {
 }
 
 async function handleActionDelete(uniqueKey = getCurrentActionKey()) {
-  if (!uniqueKey || uniqueKey === '__') {
+  if (!uniqueKey || uniqueKey === '_' || uniqueKey === '__') {
     state.status = '动作删除失败：请先选择日期和 SKU。';
     render();
     return;
   }
   await deleteAction(uniqueKey);
   await refreshRecords();
-  const [date, sku] = uniqueKey.split('__');
+  const separator = uniqueKey.indexOf('__') >= 0 ? '__' : '_';
+  const [date, sku] = uniqueKey.split(separator);
   state.actionDraft = createEmptyAction(date, sku);
   state.status = `动作记录已删除：${date} ${sku}。`;
   render();
@@ -258,16 +262,17 @@ function renderActionField(field) {
 }
 
 function renderActionDiagnostics() {
-  const date = state.actionDraft.date || state.selectedDetailKey.split('__')[0] || '';
-  const sku = state.actionDraft.sku || state.selectedDetailKey.split('__')[1] || '';
+  const date = state.actionDraft.date || state.selectedDetailKey.split(state.selectedDetailKey.includes('__') ? '__' : '_')[0] || '';
+  const sku = state.actionDraft.sku || state.selectedDetailKey.split(state.selectedDetailKey.includes('__') ? '__' : '_')[1] || '';
   const previousDate = date ? buildQuickRange('yesterday', date).startDate : '';
-  const actions = actionMap();
-  const currentAction = date && sku ? actions.get(`${date}__${sku}`) : null;
-  const previousAction = previousDate && sku ? actions.get(`${previousDate}__${sku}`) : null;
+  const currentKey = buildActionKey(date, sku);
+  const previousKey = buildActionKey(previousDate, sku);
+  const currentAction = date && sku ? findAction(date, sku) : null;
+  const previousAction = previousDate && sku ? findAction(previousDate, sku) : null;
   return `<section class="panel"><div class="panel-heading"><span class="panel-icon">?</span><div><h2>动作记录诊断</h2><p>按统一日期 key 检查当前日期和上一日的动作记录是否存在。</p></div></div>
     <div class="metrics-grid">
-      <div class="metric-card"><span>当前选择</span><strong>${html(date || '-')} / ${html(sku || '-')}</strong><small>${currentAction ? '有动作记录' : '无动作记录'}</small></div>
-      <div class="metric-card"><span>上一日</span><strong>${html(previousDate || '-')} / ${html(sku || '-')}</strong><small>${previousAction ? '有动作记录' : '无动作记录'}</small></div>
+      <div class="metric-card"><span>当前选择</span><strong>${html(date || '-')} / ${html(sku || '-')}</strong><small>${currentAction ? '有动作记录' : '无动作记录'} · key ${html(currentKey || '-')}</small></div>
+      <div class="metric-card"><span>上一日</span><strong>${html(previousDate || '-')} / ${html(sku || '-')}</strong><small>${previousAction ? '有动作记录' : '无动作记录'} · key ${html(previousKey || '-')}</small></div>
       <div class="metric-card"><span>当前记录来源</span><strong>${html(ACTION_SOURCE_LABELS[currentAction?.source] || currentAction?.source || '-')}</strong><small>更新时间：${html(currentAction?.updatedAt || '-')}</small></div>
       <div class="metric-card"><span>上一日记录来源</span><strong>${html(ACTION_SOURCE_LABELS[previousAction?.source] || previousAction?.source || '-')}</strong><small>更新时间：${html(previousAction?.updatedAt || '-')}</small></div>
       <div class="metric-card"><span>IndexedDB 动作记录总数</span><strong>${formatNumber(state.actions.length)}</strong></div>
@@ -277,7 +282,7 @@ function renderActionDiagnostics() {
 
 function renderActionModule(dates, skus) {
   const currentKey = getCurrentActionKey();
-  const existing = actionMap().get(currentKey);
+  const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku);
   const groups = ['基础字段', 'CPC 模块', 'CPM 模块'].map((group) => `<fieldset class="action-fieldset"><legend>${group}</legend><div class="action-form-grid">${ACTION_FIELDS.filter((field) => field.group === group).map(renderActionField).join('')}</div></fieldset>`).join('');
   return `<section class="panel action-panel">
     <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div>
@@ -347,9 +352,11 @@ function renderEffectCards(analyses) {
       <div class="mini-metrics action-meta">
         <span>分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
         <span>对比日期：${html(item.actionMeta?.comparisonDate || '-')}</span>
-        <span>使用的动作记录日期：${html(item.actionMeta?.usedActionDate || '-')}</span>
-        <span>使用的 SKU：${html(item.actionMeta?.sku || item.sku)}</span>
-        <span>动作记录来源：${html(item.actionMeta?.found ? item.actionMeta.source : '未找到 IndexedDB 动作记录')}</span>
+        <span>当前 SKU：${html(item.actionMeta?.sku || item.sku)}</span>
+        <span>查找动作日期：${html(item.actionMeta?.requiredActionDate || '-')}</span>
+        <span>查找 key：${html(item.actionMeta?.lookupKey || '-')}</span>
+        <span>是否找到动作：${item.actionMeta?.found ? '是' : '否'}</span>
+        <span>找到的动作来源 source：${html(item.actionMeta?.found ? item.actionMeta.source : '未找到 IndexedDB 动作记录')}</span>
       </div>
       <p>${html(resultText)}</p>
       <p>${html(effectText)}</p>
@@ -499,9 +506,8 @@ function render() {
   const comparison = buildComparison(state.records, state.filters);
   const dates = getDateOptions(state.records);
   const skus = getSkuOptions(state.records);
-  const actions = actionMap();
   const selectedRecord = state.records.find((record) => record.uniqueKey === state.selectedDetailKey) || filtered[0];
-  const selectedAction = selectedRecord ? actions.get(selectedRecord.uniqueKey) : null;
+  const selectedAction = selectedRecord ? findAction(selectedRecord.date, selectedRecord.sku) : null;
   const effectAnalyses = buildEffectAnalysis(state.records, state.actions, state.filters);
 
   root.innerHTML = `<main class="app-shell">
