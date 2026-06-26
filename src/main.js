@@ -3,7 +3,7 @@ import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup,
 import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
-import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, buildActionKey, createEmptyAction, getActionRecord, getCpmMinBidForAction, normalizeAction, validateCpmMinBids } from './utils/actions.js';
+import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, buildActionKey, createEmptyAction, getActionRecord, getEffectiveAction, getCpmMinBidForAction, isActionContentEqual, normalizeAction, validateCpmMinBids } from './utils/actions.js';
 import { buildEffectAnalysis, buildSkuActionHistory, metricLabels } from './utils/effectAnalysis.js';
 import { buildQuickRange, getTodayDate } from './utils/date.js';
 import { toProfitCny, toProfitRub } from './utils/currency.js';
@@ -184,6 +184,7 @@ function renderTable(records) {
 
 const actionMap = () => new Map(state.actions.map((action) => [action.uniqueKey, action]));
 const findAction = (date, sku) => getActionRecord(state.actions, date, sku);
+const findEffectiveAction = (date, sku) => getEffectiveAction(state.actions, date, sku);
 
 const getCurrentActionKey = () => buildActionKey(state.actionDraft.date || '', state.actionDraft.sku || '');
 
@@ -193,14 +194,16 @@ const setActionDraftFromKey = (uniqueKey) => {
   const [date = '', sku = ''] = uniqueKey.split(separator);
   const lookupDate = record?.date || date;
   const lookupSku = record?.sku || sku;
-  const action = findAction(lookupDate, lookupSku);
-  state.actionDraft = action ? { ...action } : createEmptyAction(lookupDate, lookupSku);
+  const effective = findEffectiveAction(lookupDate, lookupSku);
+  state.actionDraft = effective.action ? { ...effective.action, date: lookupDate, sku: lookupSku } : createEmptyAction(lookupDate, lookupSku);
 };
 
 async function handleActionSave() {
   const currentKey = getCurrentActionKey();
   const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku);
-  const action = normalizeAction({ ...state.actionDraft, source: existing ? 'manual_modified' : 'manual' });
+  const effective = getEffectiveAction(state.actions, state.actionDraft.date, state.actionDraft.sku);
+  const inheritedUnchanged = !existing && effective.isInherited && isActionContentEqual(state.actionDraft, effective.action);
+  const action = normalizeAction({ ...state.actionDraft, source: existing ? 'manual_modified' : inheritedUnchanged ? 'inherited_saved' : 'manual_modified', originalActionDate: inheritedUnchanged ? effective.sourceActionDate : state.actionDraft.originalActionDate, sourceActionDate: inheritedUnchanged ? effective.sourceActionDate : state.actionDraft.sourceActionDate, effectiveFromDate: state.actionDraft.date, isInherited: false });
   if (!action.date || !action.sku) {
     state.status = '动作保存失败：请先选择日期和 SKU。';
     render();
@@ -216,7 +219,7 @@ async function handleActionSave() {
   await refreshRecords();
   state.selectedDetailKey = action.uniqueKey;
   state.actionDraft = { ...action };
-  state.status = `动作记录已保存：${action.date} ${action.sku}。`;
+  state.status = inheritedUnchanged ? `已将继承动作保存为当前日期动作：${action.date} ${action.sku}。` : `已保存新动作，从当前日期开始生效：${action.date} ${action.sku}。`;
   render();
 }
 
@@ -283,6 +286,8 @@ function renderActionDiagnostics() {
 function renderActionModule(dates, skus) {
   const currentKey = getCurrentActionKey();
   const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku);
+  const effective = getEffectiveAction(state.actions, state.actionDraft.date, state.actionDraft.sku);
+  const sourceText = existing ? `当前日期已有保存动作。来源：${ACTION_SOURCE_LABELS[existing.source] || existing.source || '-'}。` : effective.isInherited ? `当前日期未保存新动作，正在沿用 ${effective.sourceActionDate} 的动作。如需从今天开始改变策略，请修改后点击保存。` : '该 SKU 暂无历史动作记录，请填写初始动作。';
   const groups = ['基础字段', 'CPC 模块', 'CPM 模块'].map((group) => `<fieldset class="action-fieldset"><legend>${group}</legend><div class="action-form-grid">${ACTION_FIELDS.filter((field) => field.group === group).map(renderActionField).join('')}</div></fieldset>`).join('');
   return `<section class="panel action-panel">
     <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div>
@@ -290,6 +295,7 @@ function renderActionModule(dates, skus) {
       <label class="form-field"><span>日期</span><select id="action-date"><option value="">选择日期</option>${dates.map((date) => `<option value="${html(date)}" ${date === state.actionDraft.date ? 'selected' : ''}>${html(date)}</option>`).join('')}</select></label>
       <label class="form-field"><span>SKU</span><select id="action-sku"><option value="">选择 SKU</option>${skus.map((sku) => `<option value="${html(sku)}" ${sku === state.actionDraft.sku ? 'selected' : ''}>${html(sku)}</option>`).join('')}</select></label>
     </div>
+    <p class="status-line">${html(sourceText)}</p>
     ${groups}
     <div class="action-row form-actions">
       <button id="save-action" type="button">${existing ? '更新动作记录' : '保存动作记录'}</button>
@@ -336,7 +342,11 @@ function renderStrategyBoard(analyses, comparison) {
     <div class="mini-metrics action-meta">
       <span>当前分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
       <span>SKU：${html(item.sku)}</span>
-      <span>最近动作日期：${html(item.actionMeta?.usedActionDate || '-')}</span>
+      <span>生效动作日期：${html(item.actionMeta?.effectiveActionDate || item.actionMeta?.usedActionDate || '-')}</span>
+      <span>当天新动作：${item.actionMeta?.isTodayNewAction ? '是' : '否'}</span>
+      <span>继承动作：${item.actionMeta?.isInherited ? '是' : '否'}</span>
+      <span>继承来源日期：${html(item.actionMeta?.isInherited ? item.actionMeta?.sourceActionDate : '-')}</span>
+      <span>动作已连续执行：${item.actionMeta?.daysSinceAction ?? '-'} 天</span>
       <span>动作距今天数：${item.actionMeta?.daysSinceAction ?? '-'}</span>
       <span>动作后 1 天：${html(item.actionWindows?.after1?.summary || '-')}</span>
       <span>动作后 3 天：${html(item.actionWindows?.after3?.summary || '-')}</span>
@@ -365,7 +375,10 @@ function renderEffectCards(analyses) {
         <span>对比日期：${html(item.actionMeta?.comparisonDate || '-')}</span>
         <span>当前 SKU：${html(item.actionMeta?.sku || item.sku)}</span>
         <span>上一日动作日期：${html(item.actionMeta?.requiredActionDate || '-')}</span>
-        <span>实际使用动作日期：${html(item.actionMeta?.usedActionDate || '-')}</span>
+        <span>生效动作日期：${html(item.actionMeta?.effectiveActionDate || item.actionMeta?.usedActionDate || '-')}</span>
+        <span>当天新动作：${item.actionMeta?.isTodayNewAction ? '是' : '否'}</span>
+        <span>继承动作：${item.actionMeta?.isInherited ? '是' : '否'}</span>
+        <span>继承来源日期：${html(item.actionMeta?.isInherited ? item.actionMeta?.sourceActionDate : '-')}</span>
         <span>动作距今天数：${item.actionMeta?.daysSinceAction ?? '-'}</span>
         <span>查找 key：${html(item.actionMeta?.lookupKey || '-')}</span>
         <span>是否找到动作：${item.actionMeta?.found ? '是' : '否'}</span>
@@ -398,7 +411,7 @@ function renderSkuActionHistoryPanel(records, actions) {
   if (!selectedSku) return '<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>选择某个 SKU 后显示最近 30 天动作记录。</p></div></div><p class="empty-state">请选择 SKU 查看动作历史。</p></section>';
   const endDate = state.filters.endDate || state.today.date || records.map((record) => record.date).sort().at(-1) || '';
   const rows = buildSkuActionHistory(records, actions, selectedSku, endDate);
-  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>${html(selectedSku)} 最近 30 天动作记录，包含动作后 1/3/7 天结果和系统判断。</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>动作摘要</th><th>CPC 状态</th><th>CPM 状态</th><th>价格动作</th><th>主图动作</th><th>关键词动作</th><th>库存动作</th><th>备注</th><th>动作后 1 天结果</th><th>动作后 3 天结果</th><th>动作后 7 天结果</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.date)}</td><td>${html(row.summary)}</td><td>${html(row.action.cpcEnabled || '-')}</td><td>${html(row.action.cpmEnabled || '-')}</td><td>${html(row.action.priceAction || '-')}</td><td>${html(row.action.imageAction || '-')}</td><td>${html(row.action.keywordAction || '-')}</td><td>${html(row.action.stockAction || '-')}</td><td>${html(row.action.note || '-')}</td><td>${html(row.windows.after1.summary)}</td><td>${html(row.windows.after3.summary)}</td><td>${html(row.windows.after7.summary)}</td><td>${html(row.judgement)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty-state">最近 30 天未找到动作记录。</p>'}</section>`;
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>${html(selectedSku)} 最近 30 天动作记录，包含动作后 1/3/7 天结果和系统判断。</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>记录类型</th><th>动作摘要</th><th>CPC 状态</th><th>CPM 状态</th><th>价格动作</th><th>主图动作</th><th>关键词动作</th><th>库存动作</th><th>备注</th><th>动作后 1 天结果</th><th>动作后 3 天结果</th><th>动作后 7 天结果</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.date)}</td><td>${html(row.type === 'inherited' ? `继承 ${row.sourceActionDate}` : (ACTION_SOURCE_LABELS[row.action.source] || row.action.source || '当天保存'))}</td><td>${html(row.summary)}</td><td>${html(row.action.cpcEnabled || '-')}</td><td>${html(row.action.cpmEnabled || '-')}</td><td>${html(row.action.priceAction || '-')}</td><td>${html(row.action.imageAction || '-')}</td><td>${html(row.action.keywordAction || '-')}</td><td>${html(row.action.stockAction || '-')}</td><td>${html(row.action.note || '-')}</td><td>${html(row.windows.after1.summary)}</td><td>${html(row.windows.after3.summary)}</td><td>${html(row.windows.after7.summary)}</td><td>${html(row.judgement)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty-state">最近 30 天未找到动作记录。</p>'}</section>`;
 }
 
 function renderSuggestionHistory(analyses, dates, skus) {

@@ -8,7 +8,8 @@ export const getActionRecord = (actions = [], date = '', sku = '') => {
   return actions.find((action) => action?.uniqueKey === key || buildActionKey(action?.date, action?.sku) === key) || null;
 };
 
-export const ACTION_LOOKBACK_DAYS = 7;
+export const ACTION_INHERIT_LOOKBACK_DAYS = 30;
+export const ACTION_LOOKBACK_DAYS = ACTION_INHERIT_LOOKBACK_DAYS;
 export const ACTION_HISTORY_DAYS = 30;
 
 export const getSkuActionTimeline = (actions = [], sku = '', { beforeDate = '', fromDate = '', toDate = '' } = {}) => {
@@ -39,6 +40,61 @@ export const findRecentAction = (actions = [], date = '', sku = '', lookbackDays
   };
 };
 
+
+export const getEffectiveAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_INHERIT_LOOKBACK_DAYS) => {
+  const analysisDate = normalizeDate(date);
+  const targetSku = normalizeSku(sku);
+  const explicit = getActionRecord(actions, analysisDate, targetSku);
+  if (explicit) {
+    const action = normalizeAction(explicit);
+    return {
+      action: { ...action, effectiveFromDate: action.date, sourceActionDate: action.date, isInherited: false },
+      explicitAction: action,
+      found: true,
+      isInherited: false,
+      sourceActionDate: action.date,
+      effectiveFromDate: action.date,
+      daysSinceAction: 0,
+      lookbackDays,
+      message: '当前日期已有保存动作。',
+    };
+  }
+  const recent = findRecentAction(actions, analysisDate, targetSku, lookbackDays);
+  if (!recent.action) {
+    return {
+      action: null,
+      explicitAction: null,
+      found: false,
+      isInherited: false,
+      sourceActionDate: '',
+      effectiveFromDate: '',
+      daysSinceAction: null,
+      lookbackDays,
+      message: `最近 ${lookbackDays} 天未找到动作记录。`,
+    };
+  }
+  const inherited = normalizeAction(recent.action);
+  return {
+    action: { ...inherited, date: analysisDate, uniqueKey: buildActionKey(analysisDate, targetSku), effectiveFromDate: inherited.date, sourceActionDate: inherited.date, originalActionDate: inherited.date, isInherited: true },
+    explicitAction: null,
+    found: true,
+    isInherited: true,
+    sourceActionDate: inherited.date,
+    effectiveFromDate: inherited.date,
+    daysSinceAction: recent.daysSinceAction,
+    lookbackDays,
+    message: `当前日期未保存新动作，正在沿用最近一次动作：${inherited.date}。`,
+  };
+};
+
+export const getActionComparable = (action = {}) => {
+  const ignored = new Set(['uniqueKey', 'updatedAt', 'source', 'effectiveFromDate', 'sourceActionDate', 'originalActionDate', 'isInherited']);
+  const normalized = normalizeAction(action);
+  return Object.fromEntries(Object.entries(normalized).filter(([key]) => !ignored.has(key)));
+};
+
+export const isActionContentEqual = (a = {}, b = {}) => JSON.stringify(getActionComparable(a)) === JSON.stringify(getActionComparable(b));
+
 export const OVERALL_AD_STATUS_OPTIONS = ['无广告', '仅 CPC', '仅 CPM', 'CPC+CPM'];
 export const AD_STATUS_OPTIONS = OVERALL_AD_STATUS_OPTIONS;
 export const BOOLEAN_STATUS_OPTIONS = ['开启', '关闭'];
@@ -51,14 +107,15 @@ export const PRICE_ACTION_OPTIONS = ['涨价', '降价', '保持价格', '参加
 export const IMAGE_ACTION_OPTIONS = ['更换主图', '未更换'];
 export const KEYWORD_ACTION_OPTIONS = ['调整标题', '调整关键词', '未调整'];
 export const STOCK_ACTION_OPTIONS = ['补货', '库存不足', '库存正常'];
-export const ACTION_SOURCE_OPTIONS = ['manual', 'manual_modified', 'json_import', 'excel_auto'];
+export const ACTION_SOURCE_OPTIONS = ['manual', 'manual_modified', 'inherited_saved', 'json_import', 'excel_auto'];
 export const ACTION_SOURCE_LABELS = {
   manual: '手动填写',
   manual_modified: '手动修改',
+  inherited_saved: '继承后保存',
   json_import: 'JSON 导入',
   excel_auto: 'Excel 自动识别',
 };
-export const ACTION_SOURCE_PRIORITY = { excel_auto: 1, json_import: 2, manual: 3, manual_modified: 4 };
+export const ACTION_SOURCE_PRIORITY = { excel_auto: 1, json_import: 2, inherited_saved: 3, manual: 3, manual_modified: 4 };
 
 export const ACTION_FIELDS = [
   { key: 'adStatus', label: '整体广告状态', options: OVERALL_AD_STATUS_OPTIONS, disabled: true, group: '基础字段' },
@@ -198,7 +255,7 @@ export const normalizeAction = (action) => {
   const aliased = normalizeActionAliases(action);
   const date = normalizeDateKey(aliased.date);
   const sku = normalizeSku(aliased.sku);
-  const sourceAlias = { 'Excel 自动识别': 'excel_auto', 手动填写: 'manual', 手动修改: 'manual_modified', 'JSON 导入': 'json_import' };
+  const sourceAlias = { 'Excel 自动识别': 'excel_auto', 手动填写: 'manual', 手动修改: 'manual_modified', 继承后保存: 'inherited_saved', 'JSON 导入': 'json_import' };
   const normalized = { ...createEmptyAction(), ...aliased, date, sku, source: sourceAlias[aliased.source] || aliased.source || 'manual' };
   numberFields.forEach((field) => { if (field in normalized) normalized[field] = toNumberOrEmpty(normalized[field]); });
   return { ...applyAdRules(normalized), uniqueKey: buildActionKey(date, sku), updatedAt: normalized.updatedAt || new Date().toISOString() };
