@@ -8,6 +8,37 @@ export const getActionRecord = (actions = [], date = '', sku = '') => {
   return actions.find((action) => action?.uniqueKey === key || buildActionKey(action?.date, action?.sku) === key) || null;
 };
 
+export const ACTION_LOOKBACK_DAYS = 7;
+export const ACTION_HISTORY_DAYS = 30;
+
+export const getSkuActionTimeline = (actions = [], sku = '', { beforeDate = '', fromDate = '', toDate = '' } = {}) => {
+  const targetSku = normalizeSku(sku);
+  return actions
+    .map((action) => normalizeAction(action))
+    .filter((action) => action.sku && (!targetSku || action.sku === targetSku))
+    .filter((action) => !beforeDate || action.date < normalizeDate(beforeDate))
+    .filter((action) => !fromDate || action.date >= normalizeDate(fromDate))
+    .filter((action) => !toDate || action.date <= normalizeDate(toDate))
+    .sort((a, b) => a.date.localeCompare(b.date));
+};
+
+export const findRecentAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_LOOKBACK_DAYS) => {
+  const analysisDate = normalizeDate(date);
+  const targetSku = normalizeSku(sku);
+  const timeline = getSkuActionTimeline(actions, targetSku, { beforeDate: analysisDate });
+  const earliest = normalizeDateKey(new Date(new Date(`${analysisDate}T00:00:00Z`).getTime() - lookbackDays * 86400000));
+  const recent = timeline.filter((action) => action.date >= earliest).at(-1) || null;
+  return {
+    action: recent,
+    timeline,
+    found: Boolean(recent),
+    lookbackDays,
+    analysisDate,
+    daysSinceAction: recent ? Math.round((new Date(`${analysisDate}T00:00:00Z`) - new Date(`${recent.date}T00:00:00Z`)) / 86400000) : null,
+    previousDayHadAction: Boolean(getActionRecord(actions, new Date(new Date(`${analysisDate}T00:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10), targetSku)),
+  };
+};
+
 export const OVERALL_AD_STATUS_OPTIONS = ['无广告', '仅 CPC', '仅 CPM', 'CPC+CPM'];
 export const AD_STATUS_OPTIONS = OVERALL_AD_STATUS_OPTIONS;
 export const BOOLEAN_STATUS_OPTIONS = ['开启', '关闭'];

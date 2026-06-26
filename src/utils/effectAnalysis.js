@@ -1,21 +1,25 @@
 import { toProfitRub } from './currency.js';
 import { hasValidBusinessData } from './excel.js';
 import { addDays as addDateDays, normalizeDateKey } from './date.js';
-import { buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, getActionRecord, normalizeAction, normalizeSku } from './actions.js';
+import { ACTION_HISTORY_DAYS, ACTION_LOOKBACK_DAYS, actionToSummary, buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, findRecentAction, getSkuActionTimeline, normalizeAction, normalizeSku } from './actions.js';
 
 const METRICS = {
-  totalOrders: '订单量',
-  impressions: '曝光',
-  clicks: '点击',
+  totalOrders: '订单',
   revenue: '销售额',
   adSpend: '广告费',
-  adShare: '广告占比',
   profit: '利润',
   margin: '利润率',
+  roi: 'ROI',
+  acos: 'ACOS',
+  impressions: '曝光',
+  clicks: '点击',
   ctr: 'CTR',
   cvr: 'CVR',
-  acos: 'ACOS',
-  roi: 'ROI',
+  adImpressions: '广告曝光',
+  adClicks: '广告点击',
+  adCtr: '广告 CTR',
+  adOrders: '广告订单',
+  adShare: '广告费占比',
   stock: '库存',
   price: '价格',
   reviews: '评论数',
@@ -85,7 +89,11 @@ const enrichRecord = (record) => {
     adSpend,
     impressions,
     clicks,
-    adShare: number(record.adShare) || safeDivide(number(record.adOrders), totalOrders) || safeDivide(adSpend, revenue),
+    adImpressions: number(record.adImpressions) || impressions,
+    adClicks: number(record.adClicks) || clicks,
+    adCtr: number(record.adCtr) || safeDivide(number(record.adClicks) || clicks, number(record.adImpressions) || impressions),
+    adOrders: number(record.adOrders),
+    adShare: number(record.adShare) || safeDivide(adSpend, revenue),
     profit: toProfitRub(record),
     profitRub: toProfitRub(record),
     margin: safeDivide(toProfitRub(record), revenue),
@@ -123,9 +131,80 @@ const buildMetricSnapshot = (todayRecord, yesterdayRecord, last3, last7, before3
   }]));
 };
 
-const actionForDate = (actions, date, sku) => getActionRecord(actions, date, sku);
-const noDataRecommendation = (sku, hasPreviousAction) => makeRecommendation('观察1天', hasPreviousAction
-  ? `${sku} 已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。`
+const summarizeChange = (after = {}, before = {}) => {
+  const parts = [];
+  ['totalOrders', 'profit', 'margin', 'adSpend', 'roi'].forEach((key) => {
+    const d = delta(number(after[key]), number(before[key]));
+    if (Math.abs(d.rate) >= 0.01 || Math.abs(d.value) > 0) parts.push(`${METRICS[key]}${signedPct(d.rate)}`);
+  });
+  return parts.length ? parts.join('，') : '暂无明显变化';
+};
+
+const buildActionWindows = (sorted, actionDate) => {
+  const before = (days) => sorted.filter((record) => record.date < actionDate).slice(-days);
+  const afterThrough = (days) => sorted.filter((record) => record.date > actionDate && record.date <= addDateDays(actionDate, days));
+  const avg = (rows) => rows.length ? averageRecords(rows) : null;
+  const before3 = avg(before(3));
+  const before7 = avg(before(7));
+  const make = (days) => {
+    const rows = afterThrough(days);
+    const after = avg(rows);
+    return { days, hasData: rows.length > 0, recordCount: rows.length, summary: after && before3 ? summarizeChange(after, before3) : '暂无后续数据', metrics: after };
+  };
+  return { before3Avg: before3, before7Avg: before7, after1: make(1), after3: make(3), after7: make(7) };
+};
+
+const containsText = (action, pattern) => pattern.test([action?.budgetAction, action?.priceAction, action?.note, action?.rawOperationAction, action?.cpmNote, action?.cpcNote, action?.cpmPosition, action?.adStatus].join(' '));
+
+const buildActionJudgement = (action, windows, nearby = []) => {
+  const before = windows.before3Avg || windows.before7Avg || {};
+  const after = windows.after3.metrics || windows.after1.metrics || windows.after7.metrics || {};
+  const order = delta(number(after.totalOrders), number(before.totalOrders));
+  const profit = delta(number(after.profit), number(before.profit));
+  const margin = delta(number(after.margin), number(before.margin));
+  const spend = delta(number(after.adSpend), number(before.adSpend));
+  const roi = delta(number(after.roi), number(before.roi));
+  const stableOrders = Math.abs(order.rate) <= 0.1;
+  const messages = [];
+  if (nearby.length >= 2 && nearby.some((a, i) => i && Math.abs((new Date(a.date) - new Date(nearby[i - 1].date)) / 86400000) <= 2)) messages.push('多个动作叠加影响，不能单独归因。');
+  if (!windows.after1.hasData && !windows.after3.hasData) messages.push(`${action.date === windows.analysisDate ? '今日刚' : '动作后'}${action.priceAction || '调整'}，暂无法判断效果。建议明天观察点击转订单率、销售额和利润率变化。`);
+  if (action.priceAction === '涨价') {
+    if (order.rate < -0.05 && margin.value > 0 && profit.value >= 0) messages.push('涨价后订单下降，但利润率提升，说明涨价提高了单件收益，但可能影响转化。建议继续观察或小幅回调价格。');
+    else if (order.rate < -0.05 && profit.value < 0) messages.push('涨价后订单和利润同时下降，说明价格可能影响成交，建议考虑恢复原价或参加活动。');
+    else messages.push('涨价可能提高利润率但影响转化，建议结合 3 天与 7 天窗口继续观察。');
+  }
+  if (action.priceAction === '降价') {
+    if (order.rate > 0.05 && margin.value < 0) messages.push('降价带动订单增长，但压缩利润率。若总利润提升，可以继续；若总利润下降，不建议继续降价。');
+    else messages.push('降价可能拉动订单但压缩利润，需重点观察总利润是否同步提升。');
+  }
+  if (containsText(action, /暂停推荐|关闭CPM推荐|暂停.*推荐/)) {
+    if (spend.value < 0 && stableOrders && profit.value > 0) messages.push('暂停推荐可能有效：广告费下降、订单稳定、利润提升。');
+  }
+  if (action.budgetAction === '降低预算' && spend.value < 0 && stableOrders && roi.value > 0) messages.push('降低预算后广告费下降、订单稳定、ROI 提升，判断控费有效。');
+  if (action.budgetAction === '恢复广告') {
+    if (order.value > 0 && profit.value > 0) messages.push('恢复广告后订单和利润增长，判断恢复广告有效。');
+    else if (order.value > 0 && profit.value < 0) messages.push('恢复广告带来订单，但成本压力变大，建议降低预算或只保留高效位置。');
+  }
+  if (action.budgetAction === '暂停广告' || action.adStatus === '无广告') {
+    if (stableOrders && profit.value > 0) messages.push('广告关闭后自然订单稳定、利润提升，建议继续观察，不急于恢复广告。');
+    else if (order.rate < -0.15) messages.push('广告关闭后订单明显下降，建议恢复低预算 CPC 搜索或 CPM 搜索测试，不建议直接大预算投推荐。');
+  }
+  return messages.length ? messages.join(' ') : '暂无明确动作效果，建议继续观察。';
+};
+
+export const buildSkuActionHistory = (records = [], actions = [], sku = '', endDate = '', days = ACTION_HISTORY_DAYS) => {
+  const targetDate = normalizeDateKey(endDate || records.map((r) => normalizeDateKey(r.date)).sort().at(-1) || '');
+  const fromDate = targetDate ? addDateDays(targetDate, -(days - 1)) : '';
+  const normalizedRecords = records.map((r) => ({ ...r, date: normalizeDateKey(r.date), sku: normalizeSku(r.sku) })).filter((r) => !sku || r.sku === normalizeSku(sku)).sort((a, b) => a.date.localeCompare(b.date));
+  return getSkuActionTimeline(actions, sku, { fromDate, toDate: targetDate }).map((action) => {
+    const windows = buildActionWindows(normalizedRecords, action.date);
+    const nearby = getSkuActionTimeline(actions, action.sku, { fromDate: addDateDays(action.date, -2), toDate: addDateDays(action.date, 2) });
+    return { action, date: action.date, sku: action.sku, summary: actionToSummary(action), windows, judgement: buildActionJudgement(action, windows, nearby) };
+  }).sort((a, b) => b.date.localeCompare(a.date));
+};
+
+const noDataRecommendation = (sku, hasRecentAction) => makeRecommendation('观察1天', hasRecentAction
+  ? `${sku} 已找到最近动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。`
   : `${sku} 当前时间段暂无有效数据，无法生成策略建议。`, '低');
 
 const latestBidText = (action) => {
@@ -310,8 +389,10 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const exactToday = targetDate ? inRange.find((record) => record.date === targetDate) : null;
     const today = exactToday || (!targetDate ? inRange.at(-1) || sorted.at(-1) : null);
     const requiredActionDate = targetDate ? addDateDays(targetDate, -1) : '';
+    const recentLookup = targetDate ? findRecentAction(normalizedActions, targetDate, sku, ACTION_LOOKBACK_DAYS) : { action: null, found: false };
+    const currentDateAction = targetDate ? getSkuActionTimeline(normalizedActions, sku, { fromDate: targetDate, toDate: targetDate }).at(-1) || null : null;
+    const latestActionForMissing = currentDateAction || recentLookup.action || null;
     const missingCurrentData = !today || (targetDate && !exactToday);
-    const latestActionForMissing = requiredActionDate ? actionForDate(normalizedActions, requiredActionDate, sku) || null : null;
     if (missingCurrentData) {
       const recommendation = noDataRecommendation(sku, Boolean(latestActionForMissing));
       return {
@@ -321,8 +402,9 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
         latestAction: latestActionForMissing,
         previousAction: null,
         metrics: buildMetricSnapshot({}, {}, {}, {}, {}, {}),
+        actionWindows: latestActionForMissing ? buildActionWindows(sorted, latestActionForMissing.date) : null,
         noValidData: true,
-        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || requiredActionDate, sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), lookupKey: buildActionKey(requiredActionDate, sku), noValidData: true },
+        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || '', daysSinceAction: currentDateAction ? 0 : recentLookup.daysSinceAction, lookbackDays: ACTION_LOOKBACK_DAYS, previousDayHadAction: recentLookup.previousDayHadAction, missingMessage: latestActionForMissing ? (currentDateAction ? `今日刚记录动作：${latestActionForMissing.date} / ${sku}。` : `上一日没有动作记录，已找到最近动作：${latestActionForMissing.date} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`, sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), lookupKey: buildActionKey(latestActionForMissing?.date || requiredActionDate, sku), noValidData: true },
         primaryRecommendation: recommendation,
         recommendations: [recommendation],
         risks: [],
@@ -334,16 +416,20 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const yesterday = sorted.find((record) => record.date === yesterdayDate) || sorted[todayIndex - 1] || {};
     const last3Rows = sorted.slice(Math.max(0, todayIndex - 2), todayIndex + 1);
     const last7Rows = sorted.slice(Math.max(0, todayIndex - 6), todayIndex + 1);
-    const latestAction = actionForDate(normalizedActions, requiredActionDate, sku) || null;
-    const actionDate = requiredActionDate;
+    const latestAction = recentLookup.action || null;
+    const actionDate = latestAction?.date || requiredActionDate;
     const before3Rows = sorted.filter((record) => record.date < actionDate).slice(-3);
-    const after3Rows = sorted.filter((record) => record.date >= actionDate).slice(0, 3);
+    const after3Rows = sorted.filter((record) => record.date > actionDate && record.date <= addDateDays(actionDate, 3));
     const previousAction = normalizedActions.filter((action) => normalizeSku(action.sku) === sku && normalizeDateKey(action.date) < actionDate).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
     const metrics = buildMetricSnapshot(today, yesterday, averageRecords(last3Rows), averageRecords(last7Rows), averageRecords(before3Rows), averageRecords(after3Rows));
+    const actionWindows = latestAction ? buildActionWindows(sorted, latestAction.date) : null;
+    if (actionWindows) actionWindows.analysisDate = today.date;
+    const nearbyActions = latestAction ? getSkuActionTimeline(normalizedActions, sku, { fromDate: addDateDays(latestAction.date, -2), toDate: addDateDays(today.date, 0) }) : [];
+    const specialJudgement = latestAction ? buildActionJudgement(latestAction, actionWindows, nearbyActions) : '';
     const ruleResult = latestAction
       ? analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) })
-      : { recommendations: [makeRecommendation('观察1天', `未找到 ${requiredActionDate} / ${sku} 的动作记录，无法判断动作效果。`, '低')], risks: [], effects: [] };
-
+      : { recommendations: [makeRecommendation('观察1天', `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`, '低')], risks: [], effects: [] };
+    if (specialJudgement && !ruleResult.effects.some((e) => e.text === specialJudgement)) ruleResult.effects.unshift({ level: specialJudgement.includes('有效') || specialJudgement.includes('提升') ? '好' : '观察', text: specialJudgement });
     return {
       sku,
       date: today.date,
@@ -351,15 +437,20 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
       latestAction,
       previousAction,
       metrics,
+      actionWindows,
       actionMeta: {
         analysisDate: today.date,
         comparisonDate: yesterdayDate,
         requiredActionDate,
-        usedActionDate: latestAction?.date || requiredActionDate,
+        usedActionDate: latestAction?.date || '',
+        daysSinceAction: recentLookup.daysSinceAction,
+        lookbackDays: ACTION_LOOKBACK_DAYS,
+        previousDayHadAction: recentLookup.previousDayHadAction,
+        missingMessage: latestAction ? (recentLookup.previousDayHadAction ? `最近动作：${latestAction.date} / ${sku}` : `上一日没有动作记录，已找到最近动作：${latestAction.date} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`,
         sku,
         source: latestAction?.source || 'IndexedDB 动作记录',
         found: Boolean(latestAction),
-        lookupKey: buildActionKey(requiredActionDate, sku),
+        lookupKey: buildActionKey(latestAction?.date || requiredActionDate, sku),
       },
       primaryRecommendation: ruleResult.recommendations[0],
       recommendations: ruleResult.recommendations,

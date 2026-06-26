@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { buildSheetDiagnostics, hasEffectiveDailyData, normalizeSheetRow, toIsoDate, toNumber } from '../src/utils/excel.js';
 import { parseOperationActionText, normalizeAction, actionToSummary, buildActionKey, getActionRecord, mergeActionRecords, normalizeDate, normalizeSku, shouldReplaceAction, validateCpmMinBids } from '../src/utils/actions.js';
-import { buildEffectAnalysis } from '../src/utils/effectAnalysis.js';
+import { buildEffectAnalysis, buildSkuActionHistory } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, resolveDateRange } from '../src/utils/history.js';
 import { addDays, buildQuickRange, formatDateInTimeZone, getTodayDate } from '../src/utils/date.js';
 import { formatPercent, formatRuble, formatYuan } from '../src/utils/analysis.js';
@@ -99,10 +99,10 @@ const missingPreviousActionAnalysis = buildEffectAnalysis([
   { date: '2026-06-21', sku: 'ES030BK', uniqueKey: '2026-06-21__ES030BK', totalOrders: 2, adSpend: 0, revenue: 200, profit: 60 },
   { date: '2026-06-22', sku: 'ES030BK', uniqueKey: '2026-06-22__ES030BK', totalOrders: 3, adSpend: 0, revenue: 300, profit: 90 },
 ], [staleActionOnly], { date: '2026-06-22', sku: 'ES030BK' })[0];
-assert.equal(missingPreviousActionAnalysis.latestAction, null);
+assert.equal(missingPreviousActionAnalysis.latestAction.date, '2026-06-20');
 assert.equal(missingPreviousActionAnalysis.actionMeta.requiredActionDate, '2026-06-21');
-assert.equal(missingPreviousActionAnalysis.actionMeta.found, false);
-assert.match(missingPreviousActionAnalysis.primaryRecommendation.reason, /未找到 2026-06-21 \/ ES030BK 的动作记录，无法判断动作效果/);
+assert.equal(missingPreviousActionAnalysis.actionMeta.found, true);
+assert.match(missingPreviousActionAnalysis.actionMeta.missingMessage, /上一日没有动作记录，已找到最近动作：2026-06-20 \/ ES030BK/);
 
 
 
@@ -148,7 +148,7 @@ const exactMissingActionAnalysis = buildEffectAnalysis([
   { date: '2026-06-23', sku: 'ES921E', uniqueKey: '2026-06-23__ES921E', totalOrders: 2, adSpend: 0, revenue: 200, profit: 20 },
 ], [], { date: '2026-06-23', sku: 'ES921E' })[0];
 assert.equal(exactMissingActionAnalysis.latestAction, null);
-assert.match(exactMissingActionAnalysis.primaryRecommendation.reason, /未找到 2026-06-22 \/ ES921E 的动作记录/);
+assert.match(exactMissingActionAnalysis.primaryRecommendation.reason, /最近 7 天未找到动作记录/);
 assert.doesNotMatch(exactMissingActionAnalysis.primaryRecommendation.reason, /CPC|CPM|无广告/);
 
 const slashDateAction = normalizeAction({ date: '2026/06/22', sku: 'ES922E', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'json_import' });
@@ -249,7 +249,7 @@ const missingTodayWithoutBlankRow = buildEffectAnalysis([
   { date: '2026-06-21', sku: 'ES031BK', uniqueKey: '2026-06-21__ES031BK', totalOrders: 4, adSpend: 0, revenue: 400, profit: 80, stock: 30 },
 ], [normalizeAction({ date: '2026-06-21', sku: 'ES031BK', cpcEnabled: '关闭', cpmEnabled: '关闭', source: '手动填写' })], { date: '2026-06-22', sku: 'ES031BK' })[0];
 assert.equal(missingTodayWithoutBlankRow.noValidData, true);
-assert.match(missingTodayWithoutBlankRow.primaryRecommendation.reason, /已找到上一日动作记录，但当前日期暂无有效数据/);
+assert.match(missingTodayWithoutBlankRow.primaryRecommendation.reason, /已找到最近动作记录，但当前日期暂无有效数据/);
 assert.equal(missingTodayWithoutBlankRow.recommendations.some((item) => /恢复/.test(item.type + item.reason)), false);
 
 const realZeroOrderAnalysis = buildEffectAnalysis([
@@ -259,6 +259,62 @@ const realZeroOrderAnalysis = buildEffectAnalysis([
 assert.equal(realZeroOrderAnalysis.noValidData, undefined);
 assert.equal(realZeroOrderAnalysis.metrics.totalOrders.today, 0);
 assert.equal(realZeroOrderAnalysis.metrics.totalOrders.todayVsYesterday.rate, -1);
+
+
+
+// Recent-action lookup, action windows, price/ad special judgements, and SKU action history.
+const actionWindowRecords = [
+  { date: '2026-06-19', sku: 'ES030BK', uniqueKey: '2026-06-19_ES030BK', totalOrders: 10, revenue: 1000, adSpend: 100, profit: 100, impressions: 1000, clicks: 100, adImpressions: 500, adClicks: 50, adOrders: 2 },
+  { date: '2026-06-20', sku: 'ES030BK', uniqueKey: '2026-06-20_ES030BK', totalOrders: 10, revenue: 1000, adSpend: 100, profit: 100, impressions: 1000, clicks: 100, adImpressions: 500, adClicks: 50, adOrders: 2 },
+  { date: '2026-06-21', sku: 'ES030BK', uniqueKey: '2026-06-21_ES030BK', totalOrders: 10, revenue: 1000, adSpend: 100, profit: 100, impressions: 1000, clicks: 100, adImpressions: 500, adClicks: 50, adOrders: 2 },
+  { date: '2026-06-22', sku: 'ES030BK', uniqueKey: '2026-06-22_ES030BK', totalOrders: 9, revenue: 990, adSpend: 100, profit: 130, impressions: 1000, clicks: 90, adImpressions: 500, adClicks: 45, adOrders: 2 },
+  { date: '2026-06-23', sku: 'ES030BK', uniqueKey: '2026-06-23_ES030BK', totalOrders: 8, revenue: 980, adSpend: 90, profit: 150, impressions: 1000, clicks: 80, adImpressions: 450, adClicks: 40, adOrders: 2 },
+  { date: '2026-06-24', sku: 'ES030BK', uniqueKey: '2026-06-24_ES030BK', totalOrders: 8, revenue: 1000, adSpend: 90, profit: 160, impressions: 1000, clicks: 80, adImpressions: 450, adClicks: 40, adOrders: 2 },
+  { date: '2026-06-25', sku: 'ES030BK', uniqueKey: '2026-06-25_ES030BK', totalOrders: 8, revenue: 1000, adSpend: 90, profit: 160, impressions: 1000, clicks: 80, adImpressions: 450, adClicks: 40, adOrders: 2 },
+];
+const june22PriceUp = normalizeAction({ date: '2026-06-22', sku: 'ES030BK', priceAction: '涨价', cpcEnabled: '关闭', cpmEnabled: '关闭', source: 'manual' });
+const recentActionAnalysis = buildEffectAnalysis(actionWindowRecords, [june22PriceUp], { date: '2026-06-25', sku: 'ES030BK' })[0];
+assert.equal(recentActionAnalysis.latestAction.date, '2026-06-22');
+assert.equal(recentActionAnalysis.actionMeta.daysSinceAction, 3);
+assert.match(recentActionAnalysis.actionMeta.missingMessage, /上一日没有动作记录，已找到最近动作：2026-06-22 \/ ES030BK/);
+assert.equal(recentActionAnalysis.actionWindows.after1.hasData, true);
+assert.equal(recentActionAnalysis.actionWindows.after3.hasData, true);
+assert.equal(recentActionAnalysis.actionWindows.after7.hasData, true);
+assert.ok(recentActionAnalysis.effects.some((item) => /涨价后订单下降，但利润率提升/.test(item.text)));
+
+const noRecentAction = buildEffectAnalysis(actionWindowRecords, [normalizeAction({ date: '2026-06-10', sku: 'ES030BK', cpcEnabled: '关闭', cpmEnabled: '关闭' })], { date: '2026-06-25', sku: 'ES030BK' })[0];
+assert.equal(noRecentAction.actionMeta.found, false);
+assert.match(noRecentAction.primaryRecommendation.reason, /最近 7 天未找到动作记录/);
+
+const priceDown = normalizeAction({ date: '2026-06-22', sku: 'ES031BK', priceAction: '降价', cpcEnabled: '关闭', cpmEnabled: '关闭' });
+const priceDownRows = [
+  { date: '2026-06-19', sku: 'ES031BK', uniqueKey: '1', totalOrders: 10, revenue: 1000, adSpend: 0, profit: 200 },
+  { date: '2026-06-20', sku: 'ES031BK', uniqueKey: '2', totalOrders: 10, revenue: 1000, adSpend: 0, profit: 200 },
+  { date: '2026-06-21', sku: 'ES031BK', uniqueKey: '3', totalOrders: 10, revenue: 1000, adSpend: 0, profit: 200 },
+  { date: '2026-06-23', sku: 'ES031BK', uniqueKey: '4', totalOrders: 13, revenue: 1100, adSpend: 0, profit: 180 },
+  { date: '2026-06-24', sku: 'ES031BK', uniqueKey: '5', totalOrders: 14, revenue: 1150, adSpend: 0, profit: 190 },
+  { date: '2026-06-25', sku: 'ES031BK', uniqueKey: '6', totalOrders: 14, revenue: 1150, adSpend: 0, profit: 190 },
+];
+assert.ok(buildEffectAnalysis(priceDownRows, [priceDown], { date: '2026-06-25', sku: 'ES031BK' })[0].effects.some((item) => /降价带动订单增长，但压缩利润率/.test(item.text)));
+
+const pauseRecommend = normalizeAction({ date: '2026-06-22', sku: 'ES032BK', cpcEnabled: '关闭', cpmEnabled: '开启', cpmPosition: '仅搜索', note: '暂停推荐位' });
+const pauseRows = [
+  { date: '2026-06-19', sku: 'ES032BK', uniqueKey: 'p1', totalOrders: 10, revenue: 1000, adSpend: 300, profit: 100 },
+  { date: '2026-06-20', sku: 'ES032BK', uniqueKey: 'p2', totalOrders: 10, revenue: 1000, adSpend: 300, profit: 100 },
+  { date: '2026-06-21', sku: 'ES032BK', uniqueKey: 'p3', totalOrders: 10, revenue: 1000, adSpend: 300, profit: 100 },
+  { date: '2026-06-23', sku: 'ES032BK', uniqueKey: 'p4', totalOrders: 10, revenue: 1000, adSpend: 150, profit: 180 },
+  { date: '2026-06-24', sku: 'ES032BK', uniqueKey: 'p5', totalOrders: 10, revenue: 1000, adSpend: 150, profit: 180 },
+  { date: '2026-06-25', sku: 'ES032BK', uniqueKey: 'p6', totalOrders: 10, revenue: 1000, adSpend: 150, profit: 180 },
+];
+assert.ok(buildEffectAnalysis(pauseRows, [pauseRecommend], { date: '2026-06-25', sku: 'ES032BK' })[0].effects.some((item) => /暂停推荐可能有效/.test(item.text)));
+
+const stackedActions = [june22PriceUp, normalizeAction({ date: '2026-06-23', sku: 'ES030BK', budgetAction: '降低预算', cpcEnabled: '关闭', cpmEnabled: '开启', cpmPosition: '仅推荐' })];
+assert.ok(buildEffectAnalysis(actionWindowRecords, stackedActions, { date: '2026-06-25', sku: 'ES030BK' })[0].effects.some((item) => /多个动作叠加影响，不能单独归因/.test(item.text)));
+
+const history = buildSkuActionHistory(actionWindowRecords, stackedActions, 'ES030BK', '2026-06-25');
+assert.equal(history.length, 2);
+assert.equal(history[0].date, '2026-06-23');
+assert.match(history[1].summary, /价格：涨价/);
 
 const futureBlankRows = [
   { date: '2026-06-21', sku: 'ES033BK', uniqueKey: '2026-06-21__ES033BK', totalOrders: 5, adSpend: 10, revenue: 500, profit: 50 },
