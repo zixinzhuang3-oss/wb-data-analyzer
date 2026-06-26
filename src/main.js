@@ -5,7 +5,7 @@ import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
 import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, buildActionKey, createEmptyAction, getActionRecord, getEffectiveAction, getCpmMinBidForAction, isActionContentEqual, normalizeAction, validateCpmMinBids } from './utils/actions.js';
 import { buildEffectAnalysis, buildSkuActionHistory, metricLabels } from './utils/effectAnalysis.js';
-import { buildQuickRange, getTodayDate } from './utils/date.js';
+import { buildQuickRange, formatLocalDateKey, getTodayDate } from './utils/date.js';
 import { toProfitCny, toProfitRub } from './utils/currency.js';
 
 const root = document.getElementById('root');
@@ -56,9 +56,16 @@ const downloadJson = (filename, data) => {
 };
 
 async function refreshRecords() {
-  const [records, actions] = await Promise.all([getAllRecords(), getAllActions()]);
-  state.records = records;
-  state.actions = actions;
+  try {
+    const [records, actions] = await Promise.all([getAllRecords(), getAllActions()]);
+    state.records = Array.isArray(records) ? records : [];
+    state.actions = Array.isArray(actions) ? actions : [];
+  } catch (error) {
+    console.warn('读取 IndexedDB 失败，已使用空数据继续初始化。', error);
+    state.records = [];
+    state.actions = [];
+    state.status = 'IndexedDB 暂无可用数据或存在旧版本脏数据，页面已使用空状态打开。';
+  }
 }
 
 async function handleExcelUpload(file) {
@@ -125,7 +132,7 @@ async function handleBackupImport(file) {
 
 async function handleBackupExport() {
   const backup = await exportBackup();
-  downloadJson(`wb-data-backup-${new Date().toISOString().slice(0, 10)}.json`, backup);
+  downloadJson(`wb-data-backup-${formatLocalDateKey(new Date())}.json`, backup);
   state.status = `已导出：经营数据 ${backup.records.length} 条，动作记录 ${backup.actionRecords.length} 条，建议历史 ${backup.recommendationHistory.length} 条。`;
   render();
 }
@@ -538,15 +545,27 @@ function renderIntervalSummary(comparison) {
   return `<section class="panel"><h2>区间对比总结</h2><p>当前时间段 ${html(rangeText(comparison.currentRange))}，较上一时间段订单${order.value >= 0 ? '增加' : '减少'} ${formatPercent(Math.abs(order.rate))}，广告费${spend.value >= 0 ? '增加' : '下降'} ${formatPercent(Math.abs(spend.rate))}，利润${profit.value >= 0 ? '增加' : '下降'} ${formatRuble(Math.abs(profit.value))}，${advice}</p></section>`;
 }
 
+const renderModule = (name, renderer) => {
+  try {
+    return renderer();
+  } catch (error) {
+    console.error(`${name} 加载失败`, error);
+    return `<section class="panel"><h2>${html(name)}</h2><p class="empty-state error-text">该模块加载失败，请检查数据或刷新页面。</p></section>`;
+  }
+};
+
 function render() {
+  try {
   if (!state.defaultRangeApplied && state.today.date && !state.filters.startDate && !state.filters.endDate && !state.filters.allDates) applyDefaultQuickRange();
-  const filtered = filterRecords(state.records, state.filters);
-  const comparison = buildComparison(state.records, state.filters);
-  const dates = getDateOptions(state.records);
-  const skus = getSkuOptions(state.records);
-  const selectedRecord = state.records.find((record) => record.uniqueKey === state.selectedDetailKey) || filtered[0];
+  const safeRecords = Array.isArray(state.records) ? state.records : [];
+  const safeActions = Array.isArray(state.actions) ? state.actions : [];
+  const filtered = filterRecords(safeRecords, state.filters);
+  const comparison = buildComparison(safeRecords, state.filters);
+  const dates = getDateOptions(safeRecords);
+  const skus = getSkuOptions(safeRecords);
+  const selectedRecord = safeRecords.find((record) => record.uniqueKey === state.selectedDetailKey) || filtered[0];
   const selectedAction = selectedRecord ? findAction(selectedRecord.date, selectedRecord.sku) : null;
-  const effectAnalyses = buildEffectAnalysis(state.records, state.actions, state.filters);
+  const effectAnalyses = buildEffectAnalysis(safeRecords, safeActions, state.filters);
 
   root.innerHTML = `<main class="app-shell">
     <section class="hero">
@@ -566,9 +585,9 @@ function render() {
         <label class="secondary-upload"><input id="backup-upload" type="file" accept=".json,application/json" />导入备份 JSON</label>
       </div>
       <p class="status-line ${state.status.includes('失败') ? 'error-text' : ''}">${html(state.status)}</p>
-      ${renderImportSummary()}
+      ${renderModule('导入摘要', renderImportSummary)}
     </section>
-    ${renderFieldDiagnostics()}
+    ${renderModule('字段识别诊断', renderFieldDiagnostics)}
 
     <section class="panel">
       <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>快捷时间段基于真实当前日期；销售额、广告费和页面主利润均为卢布 ₽；原始利润保留人民币 ¥，按固定汇率换算。</p></div></div>
@@ -586,22 +605,22 @@ function render() {
           <button data-range-preset="all" type="button">全部日期</button>
         </div>
       </div>
-      ${renderComparisonMetrics(comparison)}
+      ${renderModule('筛选汇总指标', () => renderComparisonMetrics(comparison))}
     </section>
 
-    ${renderIntervalSummary(comparison)}
-    ${renderSkuComparison(comparison)}
-    ${renderActionModule(dates, skus)}
-    ${renderActionDiagnostics()}
-    ${renderStrategyBoard(effectAnalyses, comparison)}
-    ${renderEffectCards(effectAnalyses)}
-    ${renderRiskPanel(effectAnalyses)}
-    ${renderSuggestionHistory(effectAnalyses, dates, skus)}
-    ${renderSkuActionHistoryPanel(state.records, state.actions)}
+    ${renderModule('区间汇总', () => renderIntervalSummary(comparison))}
+    ${renderModule('SKU 对比', () => renderSkuComparison(comparison))}
+    ${renderModule('每日动作记录', () => renderActionModule(dates, skus))}
+    ${renderModule('动作记录诊断', renderActionDiagnostics)}
+    ${renderModule('明日策略建议看板', () => renderStrategyBoard(effectAnalyses, comparison))}
+    ${renderModule('动作效果分析卡片', () => renderEffectCards(effectAnalyses))}
+    ${renderModule('SKU 风险提示', () => renderRiskPanel(effectAnalyses))}
+    ${renderModule('建议历史', () => renderSuggestionHistory(effectAnalyses, dates, skus))}
+    ${renderModule('SKU 动作历史', () => renderSkuActionHistoryPanel(safeRecords, safeActions))}
 
     <section class="content-grid">
-      <div class="panel wide"><h2>历史数据明细</h2>${renderTable(filtered)}</div>
-      <aside class="panel strategy-panel"><div class="panel-heading compact"><span class="panel-icon">◎</span><h2>导入数据记录</h2></div>${renderHistoryCards(state.records)}<div class="sku-detail"><h2>SKU 详情</h2>${renderSkuDetail(selectedRecord, selectedAction)}</div></aside>
+      <div class="panel wide"><h2>历史数据明细</h2>${renderModule('历史数据明细', () => renderTable(filtered))}</div>
+      <aside class="panel strategy-panel"><div class="panel-heading compact"><span class="panel-icon">◎</span><h2>导入数据记录</h2></div>${renderModule('导入数据记录', () => renderHistoryCards(safeRecords))}<div class="sku-detail"><h2>SKU 详情</h2>${renderModule('SKU 详情', () => renderSkuDetail(selectedRecord, selectedAction))}</div></aside>
     </section>
   </main>`;
 
@@ -632,10 +651,14 @@ function render() {
     setActionDraftFromKey(state.selectedDetailKey);
     render();
   }));
+  } catch (error) {
+    console.error('主渲染入口加载失败', error);
+    root.innerHTML = '<main class="app-shell"><section class="panel"><h2>页面加载失败</h2><p class="empty-state error-text">该模块加载失败，请检查数据或刷新页面。</p></section></main>';
+  }
 }
 
 Promise.all([refreshRecords(), getTodayDate()]).then(([, today]) => {
-  state.today = today;
+  state.today = today?.date ? today : { date: formatLocalDateKey(new Date()), source: '浏览器本地时间', timeZone: 'Asia/Shanghai' };
   applyDefaultQuickRange();
   render();
 }).catch((error) => {

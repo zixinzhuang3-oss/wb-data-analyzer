@@ -1,11 +1,23 @@
-import { normalizeDateKey } from './date.js';
+import { addDays, normalizeDateKey } from './date.js';
 
+export const safeNormalizeDate = (value) => {
+  const normalized = normalizeDateKey(value);
+  return normalized || null;
+};
 export const normalizeDate = (date) => normalizeDateKey(date);
 export const normalizeSku = (sku) => String(sku || '').trim().toUpperCase();
 export const buildActionKey = (date, sku) => `${normalizeDate(date)}_${normalizeSku(sku)}`;
 export const getActionRecord = (actions = [], date = '', sku = '') => {
-  const key = buildActionKey(date, sku);
-  return actions.find((action) => action?.uniqueKey === key || buildActionKey(action?.date, action?.sku) === key) || null;
+  const actionList = Array.isArray(actions) ? actions : [];
+  const normalizedDate = safeNormalizeDate(date);
+  const targetSku = normalizeSku(sku);
+  if (!normalizedDate || !targetSku) return null;
+  const key = buildActionKey(normalizedDate, targetSku);
+  return actionList.find((action) => {
+    const actionDate = safeNormalizeDate(action?.date);
+    const actionSku = normalizeSku(action?.sku);
+    return (action?.uniqueKey === key && actionSku === targetSku) || (actionDate === normalizedDate && actionSku === targetSku);
+  }) || null;
 };
 
 export const ACTION_INHERIT_LOOKBACK_DAYS = 30;
@@ -14,36 +26,59 @@ export const ACTION_HISTORY_DAYS = 30;
 
 export const getSkuActionTimeline = (actions = [], sku = '', { beforeDate = '', fromDate = '', toDate = '' } = {}) => {
   const targetSku = normalizeSku(sku);
-  return actions
+  const actionList = Array.isArray(actions) ? actions : [];
+  const safeBeforeDate = safeNormalizeDate(beforeDate);
+  const safeFromDate = safeNormalizeDate(fromDate);
+  const safeToDate = safeNormalizeDate(toDate);
+  return actionList
     .map((action) => normalizeAction(action))
+    .filter((action) => action.date)
     .filter((action) => action.sku && (!targetSku || action.sku === targetSku))
-    .filter((action) => !beforeDate || action.date < normalizeDate(beforeDate))
-    .filter((action) => !fromDate || action.date >= normalizeDate(fromDate))
-    .filter((action) => !toDate || action.date <= normalizeDate(toDate))
+    .filter((action) => !safeBeforeDate || action.date < safeBeforeDate)
+    .filter((action) => !safeFromDate || action.date >= safeFromDate)
+    .filter((action) => !safeToDate || action.date <= safeToDate)
     .sort((a, b) => a.date.localeCompare(b.date));
 };
 
 export const findRecentAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_LOOKBACK_DAYS) => {
-  const analysisDate = normalizeDate(date);
+  const analysisDate = safeNormalizeDate(date);
   const targetSku = normalizeSku(sku);
+  const safeDays = Number.isFinite(Number(lookbackDays)) && Number(lookbackDays) > 0 ? Number(lookbackDays) : ACTION_LOOKBACK_DAYS;
+  if (!analysisDate || !targetSku) {
+    return { action: null, timeline: [], found: false, lookbackDays: safeDays, analysisDate: analysisDate || null, daysSinceAction: null, previousDayHadAction: false, sourceActionDate: null, isInherited: false };
+  }
   const timeline = getSkuActionTimeline(actions, targetSku, { beforeDate: analysisDate });
-  const earliest = normalizeDateKey(new Date(new Date(`${analysisDate}T00:00:00Z`).getTime() - lookbackDays * 86400000));
-  const recent = timeline.filter((action) => action.date >= earliest).at(-1) || null;
+  const earliest = addDays(analysisDate, -safeDays);
+  const recent = timeline.filter((action) => action.date && (!earliest || action.date >= earliest)).at(-1) || null;
   return {
     action: recent,
     timeline,
     found: Boolean(recent),
-    lookbackDays,
+    lookbackDays: safeDays,
     analysisDate,
-    daysSinceAction: recent ? Math.round((new Date(`${analysisDate}T00:00:00Z`) - new Date(`${recent.date}T00:00:00Z`)) / 86400000) : null,
-    previousDayHadAction: Boolean(getActionRecord(actions, new Date(new Date(`${analysisDate}T00:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10), targetSku)),
+    daysSinceAction: recent ? Math.max(0, timelineDateDiffDays(recent.date, analysisDate)) : null,
+    previousDayHadAction: Boolean(getActionRecord(actions, addDays(analysisDate, -1), targetSku)),
+    sourceActionDate: recent?.date || null,
+    isInherited: Boolean(recent),
   };
 };
 
 
+const timelineDateDiffDays = (fromDate, toDate) => {
+  const from = safeNormalizeDate(fromDate);
+  const to = safeNormalizeDate(toDate);
+  if (!from || !to) return null;
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  return Math.round((new Date(ty, tm - 1, td) - new Date(fy, fm - 1, fd)) / 86400000);
+};
+
 export const getEffectiveAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_INHERIT_LOOKBACK_DAYS) => {
-  const analysisDate = normalizeDate(date);
+  const analysisDate = safeNormalizeDate(date);
   const targetSku = normalizeSku(sku);
+  if (!analysisDate || !targetSku) {
+    return { action: null, explicitAction: null, found: false, isInherited: false, sourceActionDate: null, effectiveFromDate: null, daysSinceAction: null, lookbackDays, message: '未找到历史动作。' };
+  }
   const explicit = getActionRecord(actions, analysisDate, targetSku);
   if (explicit) {
     const action = normalizeAction(explicit);
@@ -66,8 +101,8 @@ export const getEffectiveAction = (actions = [], date = '', sku = '', lookbackDa
       explicitAction: null,
       found: false,
       isInherited: false,
-      sourceActionDate: '',
-      effectiveFromDate: '',
+      sourceActionDate: null,
+      effectiveFromDate: null,
       daysSinceAction: null,
       lookbackDays,
       message: `最近 ${lookbackDays} 天未找到动作记录。`,
