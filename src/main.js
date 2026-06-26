@@ -4,7 +4,7 @@ import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summariz
 import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
 import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, buildActionKey, createEmptyAction, getActionRecord, getCpmMinBidForAction, normalizeAction, validateCpmMinBids } from './utils/actions.js';
-import { buildEffectAnalysis, metricLabels } from './utils/effectAnalysis.js';
+import { buildEffectAnalysis, buildSkuActionHistory, metricLabels } from './utils/effectAnalysis.js';
 import { buildQuickRange, getTodayDate } from './utils/date.js';
 import { toProfitCny, toProfitRub } from './utils/currency.js';
 
@@ -330,30 +330,43 @@ function renderStrategyBoard(analyses, comparison) {
   if (!analyses.length) return '<section class="panel"><h2>明日策略建议看板</h2><p class="empty-state">导入历史数据后将自动生成明日策略建议。</p></section>';
   const allNoValidData = analyses.every((item) => item.noValidData);
   const context = allNoValidData ? '当前时间段暂无有效数据，请先导入数据。' : comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatRuble(deltaInfo(comparison.current.totalProfitRub, comparison.previous.totalProfitRub).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
-  return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、上一同长度时间段和每日动作，判断动作是否有效，并输出明日广告与运营建议。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
+  return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、7 天内最近动作、动作后 1/3/7 天窗口和每日动作历史，判断动作是否有效，并输出明日广告与运营建议。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
     <div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(item.date)}</span></div>
     <h3>${html(item.noValidData ? '暂无当前日期数据' : item.primaryRecommendation.type)}</h3>
-    <p>${html(item.noValidData ? '暂无当前日期数据，无法判断。' : item.primaryRecommendation.reason)}</p>
+    <div class="mini-metrics action-meta">
+      <span>当前分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
+      <span>SKU：${html(item.sku)}</span>
+      <span>最近动作日期：${html(item.actionMeta?.usedActionDate || '-')}</span>
+      <span>动作距今天数：${item.actionMeta?.daysSinceAction ?? '-'}</span>
+      <span>动作后 1 天：${html(item.actionWindows?.after1?.summary || '-')}</span>
+      <span>动作后 3 天：${html(item.actionWindows?.after3?.summary || '-')}</span>
+      <span>动作后 7 天：${html(item.actionWindows?.after7?.summary || '-')}</span>
+    </div>
+    <p><strong>最近动作内容：</strong>${html(item.latestAction ? actionToSummary(item.latestAction) : item.actionMeta?.missingMessage || '最近 7 天未找到动作记录。')}</p>
+    <p><strong>系统判断：</strong>${html(item.effects?.[0]?.text || (item.noValidData ? '暂无当前日期数据，无法判断。' : item.primaryRecommendation.reason))}</p>
+    <p><strong>明日建议：</strong>${html(item.primaryRecommendation.reason)}</p>
   </article>`).join('')}</div></section>`;
 }
 
 function renderEffectCards(analyses) {
   if (!analyses.length) return '';
-  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">↗</span><div><h2>动作效果分析卡片</h2><p>严格按“昨天动作 → 今天结果”读取 IndexedDB 中分析日期前一天 + 当前 SKU 的动作记录。</p></div><button id="refresh-effect-analysis" type="button">刷新动作分析</button></div><div class="effect-grid">${analyses.map((item) => {
-    const effectText = item.noValidData ? (item.actionMeta?.found ? '已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。' : '当前时间段暂无有效数据，无法生成策略建议。') : item.effects.length ? item.effects.map((effect) => `${effect.level}：${effect.text}`).join(' ') : '暂无明确动作效果，建议继续观察。';
-    const missingActionText = `未找到 ${item.actionMeta?.requiredActionDate || item.actionMeta?.comparisonDate || '-'} / ${item.actionMeta?.sku || item.sku} 的动作记录，无法判断动作效果。`;
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">↗</span><div><h2>动作效果分析卡片</h2><p>不再只查上一日动作；默认向前 7 天查找当前 SKU 最近动作，并展示动作后 1/3/7 天结果。</p></div><button id="refresh-effect-analysis" type="button">刷新动作分析</button></div><div class="effect-grid">${analyses.map((item) => {
+    const effectText = item.noValidData ? (item.actionMeta?.found ? `${item.actionMeta?.missingMessage || '已找到最近动作'} 当前日期暂无有效数据，暂时无法判断动作效果。` : '当前时间段暂无有效数据，无法生成策略建议。') : item.effects.length ? item.effects.map((effect) => `${effect.level}：${effect.text}`).join(' ') : '暂无明确动作效果，建议继续观察。';
+    const missingActionText = item.actionMeta?.missingMessage || `最近 7 天未找到动作记录。`;
     const actionSummary = item.actionMeta?.found ? actionToSummary(item.latestAction) : missingActionText;
     const resultText = item.noValidData
-      ? (item.actionMeta?.found ? '已找到上一日动作记录，但当前日期暂无有效数据，暂时无法判断动作效果。' : '当前时间段暂无有效数据，无法生成策略建议。')
+      ? (item.actionMeta?.found ? `${item.actionMeta?.missingMessage || '已找到最近动作'} 当前日期暂无有效数据，暂时无法判断动作效果。` : '当前时间段暂无有效数据，无法生成策略建议。')
       : item.actionMeta?.found
-        ? `昨天动作 → 今天结果：${actionSummary}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`
+        ? `最近动作 → 当前结果：${actionSummary}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`
         : `${missingActionText} 今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`;
     return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(actionSummary)}</span></div>
       <div class="mini-metrics action-meta">
         <span>分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
         <span>对比日期：${html(item.actionMeta?.comparisonDate || '-')}</span>
         <span>当前 SKU：${html(item.actionMeta?.sku || item.sku)}</span>
-        <span>查找动作日期：${html(item.actionMeta?.requiredActionDate || '-')}</span>
+        <span>上一日动作日期：${html(item.actionMeta?.requiredActionDate || '-')}</span>
+        <span>实际使用动作日期：${html(item.actionMeta?.usedActionDate || '-')}</span>
+        <span>动作距今天数：${item.actionMeta?.daysSinceAction ?? '-'}</span>
         <span>查找 key：${html(item.actionMeta?.lookupKey || '-')}</span>
         <span>是否找到动作：${item.actionMeta?.found ? '是' : '否'}</span>
         <span>找到的动作来源 source：${html(item.actionMeta?.found ? item.actionMeta.source : '未找到 IndexedDB 动作记录')}</span>
@@ -365,6 +378,9 @@ function renderEffectCards(analyses) {
         <span>广告费 ${formatRuble(item.metrics.adSpend.today)} / 近3天 ${formatRuble(item.metrics.adSpend.last3Avg)}</span>
         <span>利润 ${formatRuble(item.metrics.profit.today)} / 动作前后 ${formatRuble(item.metrics.profit.actionWindowDelta.value)}</span>
         <span>ROI ${formatNumber(item.metrics.roi.today)} · ACOS ${formatPercent(item.metrics.acos.today)}</span>
+        <span>动作后1天 ${html(item.actionWindows?.after1?.summary || '-')}</span>
+        <span>动作后3天 ${html(item.actionWindows?.after3?.summary || '-')}</span>
+        <span>动作后7天 ${html(item.actionWindows?.after7?.summary || '-')}</span>
       </div>`}
     </article>`;
   }).join('')}</div></section>`;
@@ -374,6 +390,15 @@ function renderRiskPanel(analyses) {
   const risks = analyses.flatMap((item) => item.risks.map((risk) => ({ sku: item.sku, risk })));
   if (!risks.length) return `<section class="panel"><div class="panel-heading compact"><span class="panel-icon">!</span><h2>SKU 风险提示</h2></div><p class="empty-state">当前筛选范围内暂无高风险提示。</p></section>`;
   return `<section class="panel risk-panel"><div class="panel-heading compact"><span class="panel-icon">!</span><h2>SKU 风险提示</h2></div><div class="risk-list">${risks.map((item) => `<div class="risk-item"><strong>${html(item.sku)}</strong><span>${html(item.risk)}</span></div>`).join('')}</div></section>`;
+}
+
+
+function renderSkuActionHistoryPanel(records, actions) {
+  const selectedSku = state.filters.sku || state.actionDraft.sku || state.records.find((record) => record.uniqueKey === state.selectedDetailKey)?.sku || '';
+  if (!selectedSku) return '<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>选择某个 SKU 后显示最近 30 天动作记录。</p></div></div><p class="empty-state">请选择 SKU 查看动作历史。</p></section>';
+  const endDate = state.filters.endDate || state.today.date || records.map((record) => record.date).sort().at(-1) || '';
+  const rows = buildSkuActionHistory(records, actions, selectedSku, endDate);
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>${html(selectedSku)} 最近 30 天动作记录，包含动作后 1/3/7 天结果和系统判断。</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>动作摘要</th><th>CPC 状态</th><th>CPM 状态</th><th>价格动作</th><th>主图动作</th><th>关键词动作</th><th>库存动作</th><th>备注</th><th>动作后 1 天结果</th><th>动作后 3 天结果</th><th>动作后 7 天结果</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.date)}</td><td>${html(row.summary)}</td><td>${html(row.action.cpcEnabled || '-')}</td><td>${html(row.action.cpmEnabled || '-')}</td><td>${html(row.action.priceAction || '-')}</td><td>${html(row.action.imageAction || '-')}</td><td>${html(row.action.keywordAction || '-')}</td><td>${html(row.action.stockAction || '-')}</td><td>${html(row.action.note || '-')}</td><td>${html(row.windows.after1.summary)}</td><td>${html(row.windows.after3.summary)}</td><td>${html(row.windows.after7.summary)}</td><td>${html(row.judgement)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty-state">最近 30 天未找到动作记录。</p>'}</section>`;
 }
 
 function renderSuggestionHistory(analyses, dates, skus) {
@@ -559,6 +584,7 @@ function render() {
     ${renderEffectCards(effectAnalyses)}
     ${renderRiskPanel(effectAnalyses)}
     ${renderSuggestionHistory(effectAnalyses, dates, skus)}
+    ${renderSkuActionHistoryPanel(state.records, state.actions)}
 
     <section class="content-grid">
       <div class="panel wide"><h2>历史数据明细</h2>${renderTable(filtered)}</div>
