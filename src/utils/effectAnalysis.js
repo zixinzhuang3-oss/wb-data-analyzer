@@ -1,7 +1,7 @@
 import { toProfitRub } from './currency.js';
 import { hasValidBusinessData } from './excel.js';
 import { addDays as addDateDays, normalizeDateKey } from './date.js';
-import { ACTION_HISTORY_DAYS, ACTION_LOOKBACK_DAYS, actionToSummary, buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, findRecentAction, getSkuActionTimeline, normalizeAction, normalizeSku } from './actions.js';
+import { ACTION_HISTORY_DAYS, ACTION_LOOKBACK_DAYS, actionToSummary, buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, findRecentAction, getEffectiveAction, getSkuActionTimeline, normalizeAction, normalizeSku } from './actions.js';
 
 const METRICS = {
   totalOrders: '订单',
@@ -196,10 +196,18 @@ export const buildSkuActionHistory = (records = [], actions = [], sku = '', endD
   const targetDate = normalizeDateKey(endDate || records.map((r) => normalizeDateKey(r.date)).sort().at(-1) || '');
   const fromDate = targetDate ? addDateDays(targetDate, -(days - 1)) : '';
   const normalizedRecords = records.map((r) => ({ ...r, date: normalizeDateKey(r.date), sku: normalizeSku(r.sku) })).filter((r) => !sku || r.sku === normalizeSku(sku)).sort((a, b) => a.date.localeCompare(b.date));
-  return getSkuActionTimeline(actions, sku, { fromDate, toDate: targetDate }).map((action) => {
+  const explicit = getSkuActionTimeline(actions, sku, { fromDate, toDate: targetDate }).map((action) => ({ type: 'explicit', action }));
+  const explicitDates = new Set(explicit.map((row) => row.action.date));
+  const inherited = normalizedRecords
+    .filter((record) => record.date >= fromDate && record.date <= targetDate && !explicitDates.has(record.date))
+    .map((record) => ({ type: 'inherited', effective: getEffectiveAction(actions, record.date, sku), record }))
+    .filter((row) => row.effective.found && row.effective.isInherited)
+    .map((row) => ({ type: 'inherited', action: row.effective.action, sourceActionDate: row.effective.sourceActionDate }));
+  return [...explicit, ...inherited].map((entry) => {
+    const action = entry.action;
     const windows = buildActionWindows(normalizedRecords, action.date);
     const nearby = getSkuActionTimeline(actions, action.sku, { fromDate: addDateDays(action.date, -2), toDate: addDateDays(action.date, 2) });
-    return { action, date: action.date, sku: action.sku, summary: actionToSummary(action), windows, judgement: buildActionJudgement(action, windows, nearby) };
+    return { action, date: action.date, sku: action.sku, type: entry.type, sourceActionDate: entry.sourceActionDate || action.sourceActionDate || action.date, summary: entry.type === 'inherited' ? `继承 ${entry.sourceActionDate || action.sourceActionDate}` : actionToSummary(action), windows, judgement: entry.type === 'inherited' ? `自动继承动作：沿用 ${entry.sourceActionDate || action.sourceActionDate}。` : buildActionJudgement(action, windows, nearby) };
   }).sort((a, b) => b.date.localeCompare(a.date));
 };
 
@@ -389,9 +397,10 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const exactToday = targetDate ? inRange.find((record) => record.date === targetDate) : null;
     const today = exactToday || (!targetDate ? inRange.at(-1) || sorted.at(-1) : null);
     const requiredActionDate = targetDate ? addDateDays(targetDate, -1) : '';
+    const effectiveLookup = targetDate ? getEffectiveAction(normalizedActions, targetDate, sku, ACTION_LOOKBACK_DAYS) : { action: null, found: false, isInherited: false };
     const recentLookup = targetDate ? findRecentAction(normalizedActions, targetDate, sku, ACTION_LOOKBACK_DAYS) : { action: null, found: false };
-    const currentDateAction = targetDate ? getSkuActionTimeline(normalizedActions, sku, { fromDate: targetDate, toDate: targetDate }).at(-1) || null : null;
-    const latestActionForMissing = currentDateAction || recentLookup.action || null;
+    const currentDateAction = effectiveLookup.found && !effectiveLookup.isInherited ? effectiveLookup.action : null;
+    const latestActionForMissing = effectiveLookup.action || null;
     const missingCurrentData = !today || (targetDate && !exactToday);
     if (missingCurrentData) {
       const recommendation = noDataRecommendation(sku, Boolean(latestActionForMissing));
@@ -404,7 +413,7 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
         metrics: buildMetricSnapshot({}, {}, {}, {}, {}, {}),
         actionWindows: latestActionForMissing ? buildActionWindows(sorted, latestActionForMissing.date) : null,
         noValidData: true,
-        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || '', daysSinceAction: currentDateAction ? 0 : recentLookup.daysSinceAction, lookbackDays: ACTION_LOOKBACK_DAYS, previousDayHadAction: recentLookup.previousDayHadAction, missingMessage: latestActionForMissing ? (currentDateAction ? `今日刚记录动作：${latestActionForMissing.date} / ${sku}。` : `上一日没有动作记录，已找到最近动作：${latestActionForMissing.date} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`, sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), lookupKey: buildActionKey(latestActionForMissing?.date || requiredActionDate, sku), noValidData: true },
+        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || '', daysSinceAction: effectiveLookup.daysSinceAction, lookbackDays: ACTION_LOOKBACK_DAYS, previousDayHadAction: recentLookup.previousDayHadAction, missingMessage: latestActionForMissing ? (effectiveLookup.isInherited ? `未找到当前日期新动作，已沿用最近动作：${effectiveLookup.sourceActionDate}。` : `当前日期已有保存动作：${latestActionForMissing.date} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`, effectiveActionDate: effectiveLookup.sourceActionDate || latestActionForMissing?.date || '', isTodayNewAction: Boolean(currentDateAction), isInherited: Boolean(effectiveLookup.isInherited), sourceActionDate: effectiveLookup.sourceActionDate || '', sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), lookupKey: buildActionKey(latestActionForMissing?.date || requiredActionDate, sku), noValidData: true },
         primaryRecommendation: recommendation,
         recommendations: [recommendation],
         risks: [],
@@ -416,15 +425,15 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const yesterday = sorted.find((record) => record.date === yesterdayDate) || sorted[todayIndex - 1] || {};
     const last3Rows = sorted.slice(Math.max(0, todayIndex - 2), todayIndex + 1);
     const last7Rows = sorted.slice(Math.max(0, todayIndex - 6), todayIndex + 1);
-    const latestAction = recentLookup.action || null;
-    const actionDate = latestAction?.date || requiredActionDate;
+    const latestAction = effectiveLookup.action || null;
+    const actionDate = effectiveLookup.sourceActionDate || latestAction?.date || requiredActionDate;
     const before3Rows = sorted.filter((record) => record.date < actionDate).slice(-3);
     const after3Rows = sorted.filter((record) => record.date > actionDate && record.date <= addDateDays(actionDate, 3));
     const previousAction = normalizedActions.filter((action) => normalizeSku(action.sku) === sku && normalizeDateKey(action.date) < actionDate).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
     const metrics = buildMetricSnapshot(today, yesterday, averageRecords(last3Rows), averageRecords(last7Rows), averageRecords(before3Rows), averageRecords(after3Rows));
-    const actionWindows = latestAction ? buildActionWindows(sorted, latestAction.date) : null;
+    const actionWindows = latestAction ? buildActionWindows(sorted, actionDate) : null;
     if (actionWindows) actionWindows.analysisDate = today.date;
-    const nearbyActions = latestAction ? getSkuActionTimeline(normalizedActions, sku, { fromDate: addDateDays(latestAction.date, -2), toDate: addDateDays(today.date, 0) }) : [];
+    const nearbyActions = latestAction ? getSkuActionTimeline(normalizedActions, sku, { fromDate: addDateDays(actionDate, -2), toDate: addDateDays(today.date, 0) }) : [];
     const specialJudgement = latestAction ? buildActionJudgement(latestAction, actionWindows, nearbyActions) : '';
     const ruleResult = latestAction
       ? analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) })
@@ -442,15 +451,19 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
         analysisDate: today.date,
         comparisonDate: yesterdayDate,
         requiredActionDate,
-        usedActionDate: latestAction?.date || '',
-        daysSinceAction: recentLookup.daysSinceAction,
+        usedActionDate: actionDate || '',
+        effectiveActionDate: actionDate || '',
+        isTodayNewAction: Boolean(currentDateAction),
+        isInherited: Boolean(effectiveLookup.isInherited),
+        sourceActionDate: effectiveLookup.sourceActionDate || '',
+        daysSinceAction: effectiveLookup.daysSinceAction,
         lookbackDays: ACTION_LOOKBACK_DAYS,
         previousDayHadAction: recentLookup.previousDayHadAction,
-        missingMessage: latestAction ? (recentLookup.previousDayHadAction ? `最近动作：${latestAction.date} / ${sku}` : `上一日没有动作记录，已找到最近动作：${latestAction.date} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`,
+        missingMessage: latestAction ? (effectiveLookup.isInherited ? `未找到当前日期新动作，已沿用最近动作：${effectiveLookup.sourceActionDate}。` : `当前日期已有保存动作：${actionDate} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`,
         sku,
         source: latestAction?.source || 'IndexedDB 动作记录',
         found: Boolean(latestAction),
-        lookupKey: buildActionKey(latestAction?.date || requiredActionDate, sku),
+        lookupKey: buildActionKey(actionDate || requiredActionDate, sku),
       },
       primaryRecommendation: ruleResult.recommendations[0],
       recommendations: ruleResult.recommendations,
