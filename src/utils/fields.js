@@ -17,6 +17,7 @@ export const DAILY_FIELDS = [
   { key: 'adStatus', label: '广告状态', aliases: ['广告状态'] },
   { key: 'linkId', label: '链接ID', aliases: ['链接ID', '链接id', '链接', 'linkId', 'link', 'nmId', 'NM ID'] },
   { key: 'operationAction', label: '运营动作原文', aliases: ['运营动作原文', '运营动作', '动作', '备注', '操作记录'] },
+  { key: 'dealPriceRub', label: '成交价', aliases: ['成交价', '实际成交价格', 'dealPriceRub'] },
   { key: 'price', label: '价格', aliases: ['价格', '售价', 'price'] },
   { key: 'reviews', label: '评论数', aliases: ['评论数', '评论', 'reviews'] },
   { key: 'rating', label: '评分', aliases: ['评分', 'rating'] },
@@ -54,7 +55,7 @@ export const DAILY_FIELDS = [
 ];
 
 export const NUMERIC_FIELD_KEYS = new Set([
-  'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders', 'totalOrders', 'impressions', 'clicks',
+  'dealPriceRub', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders', 'totalOrders', 'impressions', 'clicks',
   'ctr', 'addToCart', 'conversionRate', 'organicImpressions', 'organicClicks', 'organicOrders', 'adSpend',
   'adOrders', 'adShare', 'adCtr', 'adImpressions', 'adClicks', 'adClickAddToCartRate', 'adAddToCart',
   'adCostPerOrder', 'adAvgClickCost', 'revenue', 'commission', 'russiaCost', 'deliveryFee',

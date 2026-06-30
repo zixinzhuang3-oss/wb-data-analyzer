@@ -142,15 +142,16 @@ export const PRICE_ACTION_OPTIONS = ['涨价', '降价', '保持价格', '参加
 export const IMAGE_ACTION_OPTIONS = ['更换主图', '未更换'];
 export const KEYWORD_ACTION_OPTIONS = ['调整标题', '调整关键词', '未调整'];
 export const STOCK_ACTION_OPTIONS = ['补货', '库存不足', '库存正常'];
-export const ACTION_SOURCE_OPTIONS = ['manual', 'manual_modified', 'inherited_saved', 'json_import', 'excel_auto'];
+export const ACTION_SOURCE_OPTIONS = ['manual', 'manual_modified', 'inherited_saved', 'json_import', 'excel_auto', 'price_auto'];
 export const ACTION_SOURCE_LABELS = {
   manual: '手动填写',
   manual_modified: '手动修改',
   inherited_saved: '继承后保存',
   json_import: 'JSON 导入',
   excel_auto: 'Excel 自动识别',
+  price_auto: '价格自动识别',
 };
-export const ACTION_SOURCE_PRIORITY = { excel_auto: 1, json_import: 2, inherited_saved: 3, manual: 3, manual_modified: 4 };
+export const ACTION_SOURCE_PRIORITY = { excel_auto: 1, price_auto: 1, json_import: 2, inherited_saved: 3, manual: 3, manual_modified: 4 };
 
 export const ACTION_FIELDS = [
   { key: 'adStatus', label: '整体广告状态', options: OVERALL_AD_STATUS_OPTIONS, disabled: true, group: '基础字段' },
@@ -290,7 +291,7 @@ export const normalizeAction = (action) => {
   const aliased = normalizeActionAliases(action);
   const date = normalizeDateKey(aliased.date);
   const sku = normalizeSku(aliased.sku);
-  const sourceAlias = { 'Excel 自动识别': 'excel_auto', 手动填写: 'manual', 手动修改: 'manual_modified', 继承后保存: 'inherited_saved', 'JSON 导入': 'json_import' };
+  const sourceAlias = { 'Excel 自动识别': 'excel_auto', '价格自动识别': 'price_auto', 手动填写: 'manual', 手动修改: 'manual_modified', 继承后保存: 'inherited_saved', 'JSON 导入': 'json_import' };
   const normalized = { ...createEmptyAction(), ...aliased, date, sku, source: sourceAlias[aliased.source] || aliased.source || 'manual' };
   numberFields.forEach((field) => { if (field in normalized) normalized[field] = toNumberOrEmpty(normalized[field]); });
   return { ...applyAdRules(normalized), uniqueKey: buildActionKey(date, sku), updatedAt: normalized.updatedAt || new Date().toISOString() };
@@ -370,7 +371,7 @@ export const actionToSummary = (action) => {
     normalized.cpmDailyBudget !== '' && `CPM预算：${normalized.cpmDailyBudget}`,
     normalized.cpmNote && `CPM备注：${normalized.cpmNote}`,
     normalized.budgetAction && `预算动作：${normalized.budgetAction}`,
-    normalized.priceAction && `价格：${normalized.priceAction}`,
+    normalized.priceAction && (normalized.source === 'price_auto' ? `价格动作：自动识别为${normalized.priceAction}` : `价格：${normalized.priceAction}`),
     normalized.imageAction && `主图：${normalized.imageAction}`,
     normalized.keywordAction && `关键词：${normalized.keywordAction}`,
     normalized.stockAction && `库存：${normalized.stockAction}`,

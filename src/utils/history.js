@@ -7,6 +7,7 @@ const sum = (rows, key) => rows.reduce((total, row) => total + (Number(row[key])
 const sumProfitCny = (rows) => rows.reduce((total, row) => total + toProfitCny(row), 0);
 const sumProfitRub = (rows) => rows.reduce((total, row) => total + toProfitRub(row), 0);
 const safeDivide = (a, b) => (b ? a / b : 0);
+const avgPresent = (rows, key) => { const values = rows.map((row) => Number(row[key])).filter(Number.isFinite); return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0; };
 const toDate = (date) => new Date(`${date}T00:00:00Z`);
 export { addDays };
 
@@ -54,6 +55,7 @@ export const summarizeRecords = (records) => {
   const adClicks = sum(records, 'adClicks');
   const adAddToCart = sum(records, 'adAddToCart');
   const adOrders = sum(records, 'adOrders');
+  const avgDealPriceRub = avgPresent(records, 'dealPriceRub');
   return {
     dateCount: new Set(records.map((record) => record.date).filter(Boolean)).size,
     skuCount: new Set(records.map((record) => record.sku).filter(Boolean)).size,
@@ -63,6 +65,7 @@ export const summarizeRecords = (records) => {
     totalProfitCny,
     totalProfitRub,
     totalRevenue,
+    avgDealPriceRub,
     impressions,
     clicks,
     addToCart,
@@ -104,6 +107,7 @@ export const summarizeByDate = (records) => {
     skuCount: new Set(rows.map((row) => row.sku)).size,
     totalOrders: sum(rows, 'totalOrders'),
     totalRevenue: sum(rows, 'revenue'),
+    avgDealPriceRub: avgPresent(rows, 'dealPriceRub'),
     totalAdSpend: sum(rows, 'adSpend'),
     totalProfit: sumProfitRub(rows),
     totalProfitRub: sumProfitRub(rows),

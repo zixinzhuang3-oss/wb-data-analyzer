@@ -4,6 +4,7 @@ import { addDays as addDateDays, normalizeDateKey } from './date.js';
 import { ACTION_HISTORY_DAYS, ACTION_LOOKBACK_DAYS, actionToSummary, buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, findRecentAction, getEffectiveAction, getSkuActionTimeline, normalizeAction, normalizeSku } from './actions.js';
 
 const METRICS = {
+  dealPriceRub: '成交价',
   totalOrders: '订单',
   revenue: '销售额',
   adSpend: '广告费',
@@ -84,6 +85,7 @@ const enrichRecord = (record) => {
   const impressions = number(record.impressions || record.adImpressions);
   return {
     ...record,
+    dealPriceRub: number(record.dealPriceRub),
     totalOrders,
     revenue,
     adSpend,
@@ -169,14 +171,16 @@ const buildActionJudgement = (action, windows, nearby = []) => {
   if (nearby.length >= 2 && nearby.some((a, i) => i && Math.abs((new Date(a.date) - new Date(nearby[i - 1].date)) / 86400000) <= 2)) messages.push('多个动作叠加影响，不能单独归因。');
   if (!windows.after1.hasData && !windows.after3.hasData) messages.push(`${action.date === windows.analysisDate ? '今日刚' : '动作后'}${action.priceAction || '调整'}，暂无法判断效果。建议明天观察点击转订单率、销售额和利润率变化。`);
   if (action.priceAction === '涨价') {
-    if (order.rate < -0.05 && margin.value > 0 && profit.value >= 0) messages.push('涨价后订单下降，但利润率提升，说明涨价提高了单件收益，但可能影响转化。建议继续观察或小幅回调价格。');
-    else if (order.rate < -0.05 && profit.value < 0) messages.push('涨价后订单和利润同时下降，说明价格可能影响成交，建议考虑恢复原价或参加活动。');
+    if (order.rate < -0.05 && margin.value > 0 && profit.value >= 0) messages.push('涨价后订单下降，但利润率提升，说明涨价提高利润率，但可能影响转化。建议保持价格观察 1–2 天，不要继续涨价。');
+    else if (order.rate < -0.05 && profit.value < 0) messages.push('涨价后订单、销售额和利润同时下降，说明涨价可能影响成交，建议考虑恢复原价或参加活动。');
     else messages.push('涨价可能提高利润率但影响转化，建议结合 3 天与 7 天窗口继续观察。');
   }
   if (action.priceAction === '降价') {
-    if (order.rate > 0.05 && margin.value < 0) messages.push('降价带动订单增长，但压缩利润率。若总利润提升，可以继续；若总利润下降，不建议继续降价。');
+    if (order.rate > 0.05 && margin.value < 0 && profit.value >= 0) messages.push('降价带动订单增长，但压缩利润率。订单和销售额上升，利润率下降但总利润上升，说明降价有效带动订单，可以继续保持当前价格。');
+    else if (order.rate > 0.05 && profit.value < 0) messages.push('降价带动订单增长，但压缩利润率。订单上升但总利润下降，不建议继续降价，可小幅回调价格。');
     else messages.push('降价可能拉动订单但压缩利润，需重点观察总利润是否同步提升。');
   }
+  if (action.priceAction === '保持价格' && order.rate < -0.05) messages.push('保持价格时订单下降，不应误判为价格动作导致，需结合广告、库存、曝光、点击分析。');
   if (containsText(action, /暂停推荐|关闭CPM推荐|暂停.*推荐/)) {
     if (spend.value < 0 && stableOrders && profit.value > 0) messages.push('暂停推荐可能有效：广告费下降、订单稳定、利润提升。');
   }
@@ -293,6 +297,16 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
     effects.push({ level: '差', text: `${sku} 提高推荐位预算后曝光上升但 CTR ${signedPct(ctrDelta)}，推荐流量质量偏差。` });
     recommendations.push(makeRecommendation('降低推荐位预算', `${sku} 推荐流量放量后点击率下降，建议明天降低推荐位预算，把预算转向搜索或高转化入口。`, '高'));
   }
+
+  if (latestAction?.priceAction === '涨价') {
+    if (orderDelta < -0.05 && metrics.margin.todayVsYesterday.value > 0 && profitDelta >= 0) recommendations.push(makeRecommendation('保持当前策略', `${sku} 涨价后订单下降但利润率提升，判断涨价提高利润率但可能影响转化；建议保持价格观察 1–2 天，不要继续涨价。`, '高'));
+    if (orderDelta < -0.05 && metrics.revenue.todayVsYesterday.value < 0 && profitDelta < 0) recommendations.push(makeRecommendation('降价或参加活动', `${sku} 涨价后订单、销售额和利润下降，价格可能影响成交；建议考虑恢复原价或参加活动。`, '高'));
+  }
+  if (latestAction?.priceAction === '降价') {
+    if (orderDelta > 0.05 && metrics.revenue.todayVsYesterday.value > 0 && metrics.margin.todayVsYesterday.value < 0 && profitDelta > 0) recommendations.push(makeRecommendation('保持当前策略', `${sku} 降价后订单和销售额上升，利润率下降但总利润上升，说明降价有效带动订单；可以继续保持当前价格。`, '高'));
+    if (orderDelta > 0.05 && profitDelta < 0) recommendations.push(makeRecommendation('观察1天', `${sku} 降价带来订单但压缩利润，订单上升但总利润下降；不建议继续降价，可小幅回调价格。`, '高'));
+  }
+  if (latestAction?.priceAction === '保持价格' && orderDelta < -0.05) effects.push({ level: '观察', text: `${sku} 保持价格时订单下降，不要误判为价格动作导致，请结合广告、库存、曝光和点击分析。` });
 
   if (cpcOn && cpmOn) {
     effects.push({ level: '观察', text: `${sku} 同时开启 CPC 和 CPM，应拆分观察 CPC搜索、CPM搜索、CPM推荐，以及整体广告投入与利润。` });
