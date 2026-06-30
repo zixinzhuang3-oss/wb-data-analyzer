@@ -33,6 +33,7 @@ const safeDivide = (a, b) => (b ? a / b : 0);
 
 const FIXED_COLUMNS = {
   date: 0,
+  dealPriceRub: 4,
   impressions: 13,
   clicks: 14,
   ctr: 15,
@@ -53,6 +54,7 @@ const FIXED_COLUMNS = {
 
 const FIXED_COLUMN_LABELS = {
   date: 'A列',
+  dealPriceRub: 'E 列，单位 ₽',
   impressions: 'N列',
   clicks: 'O列',
   ctr: 'P列',
@@ -74,6 +76,7 @@ const FIXED_COLUMN_LABELS = {
 
 
 const DIAGNOSTIC_FIELD_LABELS = {
+  dealPriceRub: '成交价',
   revenue: '总订单销售额（不含刷单）',
   adSpend: '总广告费',
   profit: '利润',
@@ -118,9 +121,9 @@ const getFieldValue = (field, headerMap, row) => {
   return index >= 0 ? row[index] : '';
 };
 
-const BUSINESS_DATA_KEYS = ['totalOrders', 'revenue', 'impressions', 'clicks', 'addToCart', 'adSpend', 'adOrders', 'adImpressions', 'adClicks', 'adAddToCart', 'profit', 'profitCny', 'profitRub', 'stock', 'price', 'reviews', 'rating'];
+const BUSINESS_DATA_KEYS = ['dealPriceRub', 'totalOrders', 'revenue', 'impressions', 'clicks', 'addToCart', 'adSpend', 'adOrders', 'adImpressions', 'adClicks', 'adAddToCart', 'profit', 'profitCny', 'profitRub', 'stock', 'price', 'reviews', 'rating'];
 const POSITIVE_BUSINESS_KEYS = new Set(['totalOrders', 'revenue', 'impressions', 'clicks', 'addToCart', 'adSpend', 'adOrders', 'adImpressions', 'adClicks', 'adAddToCart']);
-const PRESENT_BUSINESS_KEYS = new Set(['stock', 'price', 'reviews', 'rating', 'profit', 'profitCny', 'profitRub']);
+const PRESENT_BUSINESS_KEYS = new Set(['dealPriceRub', 'stock', 'price', 'reviews', 'rating', 'profit', 'profitCny', 'profitRub']);
 
 const hasRawBusinessCell = (fieldKey, rawValue) => {
   if (!BUSINESS_DATA_KEYS.includes(fieldKey) || isBlank(rawValue)) return false;
@@ -139,7 +142,7 @@ export const hasValidBusinessData = (record = {}) => {
     const value = Number(raw);
     if (!Number.isFinite(value)) return false;
     if (POSITIVE_BUSINESS_KEYS.has(key)) return value > 0;
-    if (['stock', 'price', 'reviews', 'rating'].includes(key)) return true;
+    if (['dealPriceRub', 'stock', 'price', 'reviews', 'rating'].includes(key)) return true;
     return value !== 0;
   });
 };
@@ -149,6 +152,7 @@ export const hasEffectiveDailyData = hasValidBusinessData;
 export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   const headerMap = buildHeaderMap(headers);
   const record = { sku: sheetName.trim(), sourceSheet: sheetName.trim() };
+  record.dealPriceRubRaw = row[FIXED_COLUMNS.dealPriceRub] ?? '';
   const rawBusinessFields = {};
   DAILY_FIELDS.forEach((field) => {
     if (field.key === 'sku') return;
@@ -179,8 +183,59 @@ export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
 export const buildSheetDiagnostics = (sheetName, rows, headerIndex, XLSX) => ({
   sheetName,
   fields: Object.fromEntries(Object.entries(FIXED_COLUMN_LABELS).map(([key, column]) => [DIAGNOSTIC_FIELD_LABELS[key] || fieldLabels[key] || key, column])),
+  dealPriceSamples: rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).slice(0, 5).map((row, offset) => ({ sku: sheetName, date: toIsoDate(row[FIXED_COLUMNS.date], XLSX), rowNumber: headerIndex + 2 + offset, raw: row[FIXED_COLUMNS.dealPriceRub] ?? '', parsed: toNumber(row[FIXED_COLUMNS.dealPriceRub]), field: 'dealPriceRub', column: 'E列' })),
   blankAdDates: rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row) && AD_FIELD_KEYS.every((key) => isBlank(row[FIXED_COLUMNS[key]]))).map((row) => toIsoDate(row[FIXED_COLUMNS.date], XLSX)).filter(Boolean),
 });
+
+
+export const PRICE_CHANGE_THRESHOLD = 0.5;
+
+export const detectPriceAction = (currentPrice, previousPrice, threshold = PRICE_CHANGE_THRESHOLD) => {
+  const hasCurrent = currentPrice !== null && currentPrice !== undefined && String(currentPrice).trim?.() !== '';
+  const hasPrevious = previousPrice !== null && previousPrice !== undefined && String(previousPrice).trim?.() !== '';
+  if (!hasCurrent || !Number.isFinite(Number(currentPrice))) return { priceAction: '', message: '当天无成交价，无法判断', previousPrice: null, source: 'price_auto' };
+  if (!hasPrevious || !Number.isFinite(Number(previousPrice))) return { priceAction: '', message: '暂无上期价格，无法判断', previousPrice: null, source: 'price_auto' };
+  const diff = Number(currentPrice) - Number(previousPrice);
+  const priceAction = Math.abs(diff) < threshold ? '保持价格' : diff > 0 ? '涨价' : '降价';
+  return { priceAction, priceActionSource: 'price_auto', source: 'price_auto', previousPrice: Number(previousPrice), priceChangeRub: diff, priceChangePercent: previousPrice ? diff / Math.abs(previousPrice) : 0, message: `自动识别为${priceAction}` };
+};
+
+export const buildPriceAutoActions = (records = []) => {
+  const bySku = new Map();
+  records.forEach((record) => {
+    if (!record?.sku || !record?.date) return;
+    if (!bySku.has(record.sku)) bySku.set(record.sku, []);
+    bySku.get(record.sku).push(record);
+  });
+  const actions = [];
+  bySku.forEach((rows) => {
+    let previousPrice = null;
+    rows.sort((a, b) => a.date.localeCompare(b.date)).forEach((record) => {
+      const hasRawPrice = record.dealPriceRubRaw !== null && record.dealPriceRubRaw !== undefined && String(record.dealPriceRubRaw).trim() !== '';
+      const currentPrice = Number(record.dealPriceRub);
+      if (!hasRawPrice || !Number.isFinite(currentPrice)) return;
+      const detected = detectPriceAction(currentPrice, previousPrice);
+      record.previousDealPriceRub = Number.isFinite(Number(previousPrice)) ? Number(previousPrice) : null;
+      record.priceChangeRub = detected.priceChangeRub ?? 0;
+      record.priceChangePercent = detected.priceChangePercent ?? 0;
+      record.priceActionAuto = detected.priceAction || '';
+      record.priceActionSource = detected.priceAction ? 'price_auto' : '';
+      record.priceActionMessage = detected.message;
+      if (detected.priceAction) actions.push(parseOperationActionText(`价格动作=${detected.priceAction}`, record.date, record.sku) || null);
+      const last = actions.at(-1);
+      if (last && last.date === record.date && last.sku === record.sku) {
+        last.source = 'price_auto';
+        last.priceActionSource = 'price_auto';
+        last.previousDealPriceRub = record.previousDealPriceRub;
+        last.dealPriceRub = currentPrice;
+        last.priceChangeRub = record.priceChangeRub;
+        last.priceChangePercent = record.priceChangePercent;
+      }
+      previousPrice = currentPrice;
+    });
+  });
+  return actions.filter(Boolean);
+};
 
 export const parseExcelWorkbook = async (file) => {
   const XLSX = await loadSheetJs();
@@ -208,6 +263,8 @@ export const parseExcelWorkbook = async (file) => {
       }
     });
   });
+
+  actions.push(...buildPriceAutoActions(records));
 
   return { records, actions, skuSheets, skippedSheets, fieldLabels, diagnostics };
 };

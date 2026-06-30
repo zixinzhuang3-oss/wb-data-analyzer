@@ -132,20 +132,28 @@ export const saveExcelActions = async (actions = []) => {
   const transaction = db.transaction(ACTION_STORE, 'readwrite');
   const store = transaction.objectStore(ACTION_STORE);
   let added = 0;
+  let overwritten = 0;
   let keptManual = 0;
   await Promise.all(actions.map(async (action) => {
-    const incoming = normalizeAction({ ...action, source: 'excel_auto' });
+    const incoming = normalizeAction({ ...action, source: action.source || 'excel_auto' });
     const existing = await getFromStore(store, incoming.uniqueKey);
     if (!existing) {
       store.put(incoming);
       added += 1;
     } else {
-      keptManual += ['manual', 'manual_modified'].includes(existing.source) ? 1 : 0;
+      const merged = mergeActionRecords([normalizeAction(existing)], [incoming]);
+      const next = merged.actions.find((item) => item.uniqueKey === incoming.uniqueKey) || existing;
+      if (merged.stats.overwritten > 0) {
+        store.put(next);
+        overwritten += 1;
+      } else {
+        keptManual += ['manual', 'manual_modified'].includes(existing.source) ? 1 : 0;
+      }
     }
   }));
   await txDone(transaction);
   db.close();
-  return { autoActionAdded: added, keptManualActions: keptManual };
+  return { autoActionAdded: added, autoActionOverwritten: overwritten, keptManualActions: keptManual };
 };
 
 const normalizeRecommendation = (item) => {

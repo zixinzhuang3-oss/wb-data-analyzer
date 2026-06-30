@@ -442,6 +442,51 @@ assert.equal(fixedCurrencyRecord.revenue, 1512.5);
 assert.equal(fixedCurrencyRecord.adSpend, 1512);
 assert.equal(fixedCurrencyRecord.adShare, fixedCurrencyRecord.adSpend / fixedCurrencyRecord.revenue);
 
+
+
+// Deal price E column parsing, automatic price action recognition, summaries, and diagnostics.
+assert.equal(toNumber('2,859 ₽'), 2859);
+assert.equal(toNumber('2,703.50 ₽'), 2703.5);
+const priceRowA = [...fixedRow];
+priceRowA[4] = '2,703 ₽';
+const priceRowB = [...fixedRow];
+priceRowB[0] = '2026-06-18';
+priceRowB[4] = '2,859 ₽';
+const priceRecordA = normalizeSheetRow('ES032BK', fixedHeaders, priceRowA, XLSX);
+const priceRecordB = normalizeSheetRow('ES032BK', fixedHeaders, priceRowB, XLSX);
+assert.equal(priceRecordA.dealPriceRub, 2703);
+assert.equal(priceRecordA.dealPriceRubRaw, '2,703 ₽');
+assert.equal(priceRecordB.dealPriceRub, 2859);
+const { buildPriceAutoActions, detectPriceAction, PRICE_CHANGE_THRESHOLD } = await import('../src/utils/excel.js');
+assert.equal(PRICE_CHANGE_THRESHOLD, 0.5);
+assert.equal(detectPriceAction(2859, 2703).priceAction, '涨价');
+assert.equal(detectPriceAction(2703, 2859).priceAction, '降价');
+assert.equal(detectPriceAction(2703, 2703).priceAction, '保持价格');
+assert.equal(detectPriceAction(2703.4, 2703).priceAction, '保持价格');
+assert.equal(detectPriceAction(2703, null).message, '暂无上期价格，无法判断');
+const autoPriceActions = buildPriceAutoActions([priceRecordA, priceRecordB]);
+assert.equal(autoPriceActions.length, 1);
+assert.equal(autoPriceActions[0].priceAction, '涨价');
+assert.equal(autoPriceActions[0].source, 'price_auto');
+assert.match(actionToSummary(autoPriceActions[0]), /价格动作：自动识别为涨价/);
+assert.equal(mergeActionRecords([manualAction], [autoPriceActions[0]]).actions.some((item) => item.source === 'manual'), true);
+const avgPriceComparison = buildComparison([
+  { date: '2026-06-17', sku: 'ES032BK', uniqueKey: 'a', totalOrders: 1, dealPriceRub: 2703, revenue: 2703, profit: 10, hasValidBusinessData: true },
+  { date: '2026-06-18', sku: 'ES032BK', uniqueKey: 'b', totalOrders: 1, dealPriceRub: 2859, revenue: 2859, profit: 10, hasValidBusinessData: true },
+], { startDate: '2026-06-18', endDate: '2026-06-18', sku: 'ES032BK' });
+assert.equal(avgPriceComparison.current.avgDealPriceRub, 2859);
+assert.equal(avgPriceComparison.previous.avgDealPriceRub, 2703);
+const priceStrategy = buildEffectAnalysis([
+  { date: '2026-06-21', sku: 'ESP', uniqueKey: 'p0', totalOrders: 10, dealPriceRub: 2703, revenue: 1000, profitRub: 100, hasValidBusinessData: true },
+  { date: '2026-06-22', sku: 'ESP', uniqueKey: 'p1', totalOrders: 7, dealPriceRub: 2859, revenue: 900, profitRub: 80, hasValidBusinessData: true },
+], [normalizeAction({ date: '2026-06-22', sku: 'ESP', priceAction: '涨价', source: 'price_auto' })], { date: '2026-06-22', sku: 'ESP' })[0];
+assert.match(priceStrategy.recommendations.map((item) => item.reason).join('\n'), /涨价后订单、销售额和利润下降|恢复原价或参加活动/);
+const priceDiagnostics = buildSheetDiagnostics('ES032BK', [fixedHeaders, priceRowA], 0, XLSX);
+assert.equal(priceDiagnostics.fields['成交价'], 'E 列，单位 ₽');
+assert.equal(priceDiagnostics.dealPriceSamples[0].raw, '2,703 ₽');
+assert.equal(priceDiagnostics.dealPriceSamples[0].parsed, 2703);
+assert.equal(priceDiagnostics.dealPriceSamples[0].field, 'dealPriceRub');
+
 const diagnostics = buildSheetDiagnostics('ES068BK', [fixedHeaders, fixedRow], 0, XLSX);
 assert.equal(diagnostics.fields['总订单销售额（不含刷单）'], 'AA 列，单位 ₽');
 assert.equal(diagnostics.fields['总广告费'], 'AB 列，单位 ₽');

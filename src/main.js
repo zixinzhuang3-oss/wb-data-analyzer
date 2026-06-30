@@ -26,14 +26,14 @@ const html = (value) => String(value ?? '').replace(/[&<>"]/g, (char) => ({ '&':
 const formatNumber = (value) => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(Number(value) || 0);
 
 const displayFields = [
-  'date', 'sku', 'adStatus', 'linkId', 'operationAction', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders',
+  'date', 'sku', 'adStatus', 'linkId', 'operationAction', 'dealPriceRub', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders',
   'totalOrders', 'impressions', 'clicks', 'ctr', 'addToCart', 'conversionRate', 'organicImpressions', 'organicClicks',
   'organicOrders', 'adSpend', 'adOrders', 'adShare', 'adCtr', 'adImpressions', 'adClicks', 'adClickAddToCartRate',
   'adAddToCart', 'adCostPerOrder', 'adAvgClickCost', 'revenue', 'commission', 'russiaCost',
   'deliveryFee', 'acquiringFee', 'storageFee', 'remittanceFee', 'profitRub', 'profitCny', 'keywordRank',
 ];
 
-const rubleFields = new Set(['price', 'adSpend', 'adCostPerOrder', 'adAvgClickCost', 'revenue', 'commission', 'russiaCost', 'deliveryFee', 'acquiringFee', 'storageFee', 'remittanceFee', 'profitRub']);
+const rubleFields = new Set(['dealPriceRub', 'price', 'adSpend', 'adCostPerOrder', 'adAvgClickCost', 'revenue', 'commission', 'russiaCost', 'deliveryFee', 'acquiringFee', 'storageFee', 'remittanceFee', 'profitRub']);
 const yuanFields = new Set(['profitCny']);
 const percentFields = new Set(['ctr', 'conversionRate', 'adShare', 'adCtr', 'adClickAddToCartRate', 'orderConversionRate']);
 
@@ -107,6 +107,7 @@ function renderFieldDiagnostics() {
     <div class="record-list">${diagnostics.map((item) => `<article class="record-card">
       <strong>${html(item.sheetName)}</strong>
       ${Object.entries(item.fields).map(([label, column]) => `<span>${html(label)}：${html(column)}</span>`).join('')}
+      ${item.dealPriceSamples?.length ? item.dealPriceSamples.map((sample) => `<span>${html(sample.sku)} / ${html(sample.date || '-')}：E列 成交价：原始值 ${html(sample.raw || '-')}；解析值：${html(sample.parsed)}；页面使用字段：dealPriceRub</span>`).join('') : ''}
       ${item.blankAdDates?.length ? `<span>广告空白日期：${item.blankAdDates.map(html).join('、')}，该日期广告数据为空，已识别为广告关闭/无广告数据</span>` : '<span>未发现广告列 AB-AK 全空的数据行</span>'}
     </article>`).join('')}</div></section>`;
 }
@@ -168,6 +169,7 @@ function renderHistoryCards(records) {
     <span>SKU 数量：${row.skuCount}</span>
     <span>总订单：${formatNumber(row.totalOrders)}</span>
     <span>总销售额：${formatRuble(row.totalRevenue)}</span>
+    <span>平均成交价：${formatRuble(row.avgDealPriceRub)}</span>
     <span>总广告费：${formatRuble(row.totalAdSpend)}</span>
     <span>总利润：${formatRuble(row.totalProfitRub)}</span>
     <small>原始 ${formatYuan(row.totalProfitCny)}</small>
@@ -318,6 +320,7 @@ function renderSkuDetail(record, action) {
     <h3>${html(record.date)} · ${html(record.sku)}</h3>
     <div class="detail-grid">
       <div><span>总订单</span><strong>${formatNumber(record.totalOrders)}</strong></div>
+      <div><span>成交价</span><strong>${formatRuble(record.dealPriceRub)}</strong><small>${html(record.priceActionMessage || '')}</small></div>
       <div><span>广告费 ₽</span><strong>${formatRuble(record.adSpend)}</strong></div>
       <div><span>销售额 ₽</span><strong>${formatRuble(record.revenue)}</strong></div>
       <div><span>利润 ₽</span><strong>${formatRuble(toProfitRub(record))}</strong><small>原始 ${formatYuan(toProfitCny(record))}</small></div>
@@ -342,13 +345,15 @@ function renderSkuDetail(record, action) {
 function renderStrategyBoard(analyses, comparison) {
   if (!analyses.length) return '<section class="panel"><h2>明日策略建议看板</h2><p class="empty-state">导入历史数据后将自动生成明日策略建议。</p></section>';
   const allNoValidData = analyses.every((item) => item.noValidData);
-  const context = allNoValidData ? '当前时间段暂无有效数据，请先导入数据。' : comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatRuble(deltaInfo(comparison.current.totalProfitRub, comparison.previous.totalProfitRub).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
+  const context = allNoValidData ? '当前时间段暂无有效数据，请先导入数据。' : comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatRuble(deltaInfo(comparison.current.totalProfitRub, comparison.previous.totalProfitRub).value)}，成交价变化 ${formatRuble(deltaInfo(comparison.current.avgDealPriceRub, comparison.previous.avgDealPriceRub).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
   return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、7 天内最近动作、动作后 1/3/7 天窗口和每日动作历史，判断动作是否有效，并输出明日广告与运营建议。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
     <div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(item.date)}</span></div>
     <h3>${html(item.noValidData ? '暂无当前日期数据' : item.primaryRecommendation.type)}</h3>
     <div class="mini-metrics action-meta">
       <span>当前分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
       <span>SKU：${html(item.sku)}</span>
+      <span>成交价：${formatRuble(item.metrics?.dealPriceRub?.today)}</span>
+      <span>价格动作：${html(item.latestAction?.source === 'price_auto' ? `自动识别为${item.latestAction?.priceAction || '-'}` : item.latestAction?.priceAction || '-')}</span>
       <span>生效动作日期：${html(item.actionMeta?.effectiveActionDate || item.actionMeta?.usedActionDate || '-')}</span>
       <span>当天新动作：${item.actionMeta?.isTodayNewAction ? '是' : '否'}</span>
       <span>继承动作：${item.actionMeta?.isInherited ? '是' : '否'}</span>
@@ -381,6 +386,8 @@ function renderEffectCards(analyses) {
         <span>分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
         <span>对比日期：${html(item.actionMeta?.comparisonDate || '-')}</span>
         <span>当前 SKU：${html(item.actionMeta?.sku || item.sku)}</span>
+        <span>成交价：${formatRuble(item.metrics?.dealPriceRub?.today)}</span>
+        <span>价格动作：${html(item.latestAction?.source === 'price_auto' ? `自动识别为${item.latestAction?.priceAction || '-'}` : item.latestAction?.priceAction || '-')}</span>
         <span>上一日动作日期：${html(item.actionMeta?.requiredActionDate || '-')}</span>
         <span>生效动作日期：${html(item.actionMeta?.effectiveActionDate || item.actionMeta?.usedActionDate || '-')}</span>
         <span>当天新动作：${item.actionMeta?.isTodayNewAction ? '是' : '否'}</span>
@@ -394,6 +401,7 @@ function renderEffectCards(analyses) {
       <p>${html(resultText)}</p>
       <p>${html(effectText)}</p>
       ${item.noValidData ? '<div class="mini-metrics"><span>暂无当前日期数据，无法判断。</span></div>' : `<div class="mini-metrics">
+        <span>成交价 ${formatRuble(item.metrics.dealPriceRub.today)} / 昨日 ${formatRuble(item.metrics.dealPriceRub.yesterday)}</span>
         <span>订单 ${formatNumber(item.metrics.totalOrders.today)} / 昨日 ${formatNumber(item.metrics.totalOrders.yesterday)}</span>
         <span>广告费 ${formatRuble(item.metrics.adSpend.today)} / 近3天 ${formatRuble(item.metrics.adSpend.last3Avg)}</span>
         <span>利润 ${formatRuble(item.metrics.profit.today)} / 动作前后 ${formatRuble(item.metrics.profit.actionWindowDelta.value)}</span>
@@ -418,7 +426,7 @@ function renderSkuActionHistoryPanel(records, actions) {
   if (!selectedSku) return '<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>选择某个 SKU 后显示最近 30 天动作记录。</p></div></div><p class="empty-state">请选择 SKU 查看动作历史。</p></section>';
   const endDate = state.filters.endDate || state.today.date || records.map((record) => record.date).sort().at(-1) || '';
   const rows = buildSkuActionHistory(records, actions, selectedSku, endDate);
-  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>${html(selectedSku)} 最近 30 天动作记录，包含动作后 1/3/7 天结果和系统判断。</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>记录类型</th><th>动作摘要</th><th>CPC 状态</th><th>CPM 状态</th><th>价格动作</th><th>主图动作</th><th>关键词动作</th><th>库存动作</th><th>备注</th><th>动作后 1 天结果</th><th>动作后 3 天结果</th><th>动作后 7 天结果</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.date)}</td><td>${html(row.type === 'inherited' ? `继承 ${row.sourceActionDate}` : (ACTION_SOURCE_LABELS[row.action.source] || row.action.source || '当天保存'))}</td><td>${html(row.summary)}</td><td>${html(row.action.cpcEnabled || '-')}</td><td>${html(row.action.cpmEnabled || '-')}</td><td>${html(row.action.priceAction || '-')}</td><td>${html(row.action.imageAction || '-')}</td><td>${html(row.action.keywordAction || '-')}</td><td>${html(row.action.stockAction || '-')}</td><td>${html(row.action.note || '-')}</td><td>${html(row.windows.after1.summary)}</td><td>${html(row.windows.after3.summary)}</td><td>${html(row.windows.after7.summary)}</td><td>${html(row.judgement)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty-state">最近 30 天未找到动作记录。</p>'}</section>`;
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">☰</span><div><h2>SKU 动作历史</h2><p>${html(selectedSku)} 最近 30 天动作记录，包含动作后 1/3/7 天结果和系统判断。</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>日期</th><th>记录类型</th><th>动作摘要</th><th>CPC 状态</th><th>CPM 状态</th><th>成交价</th><th>价格动作</th><th>主图动作</th><th>关键词动作</th><th>库存动作</th><th>备注</th><th>动作后 1 天结果</th><th>动作后 3 天结果</th><th>动作后 7 天结果</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.date)}</td><td>${html(row.type === 'inherited' ? `继承 ${row.sourceActionDate}` : (ACTION_SOURCE_LABELS[row.action.source] || row.action.source || '当天保存'))}</td><td>${html(row.summary)}</td><td>${html(row.action.cpcEnabled || '-')}</td><td>${html(row.action.cpmEnabled || '-')}</td><td>${formatRuble(row.action.dealPriceRub)}</td><td>${html(row.action.source === 'price_auto' ? `自动识别为${row.action.priceAction || '-'}` : row.action.priceAction || '-')}</td><td>${html(row.action.imageAction || '-')}</td><td>${html(row.action.keywordAction || '-')}</td><td>${html(row.action.stockAction || '-')}</td><td>${html(row.action.note || '-')}</td><td>${html(row.windows.after1.summary)}</td><td>${html(row.windows.after3.summary)}</td><td>${html(row.windows.after7.summary)}</td><td>${html(row.judgement)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty-state">最近 30 天未找到动作记录。</p>'}</section>`;
 }
 
 function renderSuggestionHistory(analyses, dates, skus) {
@@ -429,6 +437,7 @@ function renderSuggestionHistory(analyses, dates, skus) {
 const metricConfig = [
   ['总订单', 'totalOrders', formatNumber],
   ['总销售额 ₽', 'totalRevenue', formatRuble],
+  ['当前平均成交价', 'avgDealPriceRub', formatRuble],
   ['总利润 ₽', 'totalProfitRub', formatRuble],
   ['原始利润 ¥', 'totalProfitCny', formatYuan],
   ['利润率', 'margin', formatPercent],
@@ -523,14 +532,16 @@ function summarizeSku(rows) {
   const totalProfitRub = rows.reduce((sum, row) => sum + toProfitRub(row), 0);
   const totalProfit = totalProfitRub;
   const stock = rows.at(-1)?.stock || 0;
-  return { totalOrders, totalRevenue, totalAdSpend, totalProfit, totalProfitRub, totalProfitCny, stock, roi: totalAdSpend ? totalRevenue / totalAdSpend : 0, acos: totalRevenue ? totalAdSpend / totalRevenue : 0 };
+  const prices = rows.map((row) => Number(row.dealPriceRub)).filter(Number.isFinite);
+  const avgDealPriceRub = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+  return { avgDealPriceRub, totalOrders, totalRevenue, totalAdSpend, totalProfit, totalProfitRub, totalProfitCny, stock, roi: totalAdSpend ? totalRevenue / totalAdSpend : 0, acos: totalRevenue ? totalAdSpend / totalRevenue : 0 };
 }
 
 function renderSkuComparison(comparison) {
   const rows = buildSkuRows(comparison);
   if (!rows.length) return '<section class="panel"><h2>SKU 区间对比</h2><p class="empty-state">当前筛选范围暂无 SKU 数据。</p></section>';
   const change = (a, b, formatter = formatNumber) => formatter((Number(a) || 0) - (Number(b) || 0));
-  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">⇄</span><div><h2>SKU 区间对比</h2><p>${state.filters.sku ? '当前为单个 SKU 区间趋势。' : '全部 SKU 按当前区间与上一同长度区间逐项对比。'}</p></div></div><div class="table-wrap"><table><thead><tr><th>SKU</th><th>当前订单</th><th>上期订单</th><th>订单变化</th><th>当前销售额</th><th>上期销售额</th><th>销售额变化</th><th>当前广告费</th><th>上期广告费</th><th>广告费变化</th><th>当前利润</th><th>上期利润</th><th>利润变化</th><th>当前 ROI</th><th>上期 ROI</th><th>当前 ACOS</th><th>上期 ACOS</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.sku)}</td><td>${formatNumber(row.current.totalOrders)}</td><td>${comparison.hasPreviousData ? formatNumber(row.previous.totalOrders) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalOrders, row.previous.totalOrders) : '无对比数据'}</td><td>${formatRuble(row.current.totalRevenue)}</td><td>${comparison.hasPreviousData ? formatRuble(row.previous.totalRevenue) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalRevenue, row.previous.totalRevenue, formatRuble) : '无对比数据'}</td><td>${formatRuble(row.current.totalAdSpend)}</td><td>${comparison.hasPreviousData ? formatRuble(row.previous.totalAdSpend) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalAdSpend, row.previous.totalAdSpend, formatRuble) : '无对比数据'}</td><td>${formatRuble(row.current.totalProfitRub)}<br><small>原始 ${formatYuan(row.current.totalProfitCny)}</small></td><td>${comparison.hasPreviousData ? `${formatRuble(row.previous.totalProfitRub)}<br><small>原始 ${formatYuan(row.previous.totalProfitCny)}</small>` : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalProfitRub, row.previous.totalProfitRub, formatRuble) : '无对比数据'}</td><td>${formatNumber(row.current.roi)}</td><td>${comparison.hasPreviousData ? formatNumber(row.previous.roi) : '无对比数据'}</td><td>${formatPercent(row.current.acos)}</td><td>${comparison.hasPreviousData ? formatPercent(row.previous.acos) : '无对比数据'}</td><td>${html(row.judge)}</td></tr>`).join('')}</tbody></table></div></section>`;
+  return `<section class="panel"><div class="panel-heading"><span class="panel-icon">⇄</span><div><h2>SKU 区间对比</h2><p>${state.filters.sku ? '当前为单个 SKU 区间趋势。' : '全部 SKU 按当前区间与上一同长度区间逐项对比。'}</p></div></div><div class="table-wrap"><table><thead><tr><th>SKU</th><th>当前平均成交价</th><th>上期平均成交价</th><th>成交价变化</th><th>成交价变化百分比</th><th>当前订单</th><th>上期订单</th><th>订单变化</th><th>当前销售额</th><th>上期销售额</th><th>销售额变化</th><th>当前广告费</th><th>上期广告费</th><th>广告费变化</th><th>当前利润</th><th>上期利润</th><th>利润变化</th><th>当前 ROI</th><th>上期 ROI</th><th>当前 ACOS</th><th>上期 ACOS</th><th>系统判断</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${html(row.sku)}</td><td>${formatRuble(row.current.avgDealPriceRub)}</td><td>${comparison.hasPreviousData ? formatRuble(row.previous.avgDealPriceRub) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.avgDealPriceRub, row.previous.avgDealPriceRub, formatRuble) : '无对比数据'}</td><td>${comparison.hasPreviousData ? formatPercent(deltaInfo(row.current.avgDealPriceRub, row.previous.avgDealPriceRub).rate) : '无对比数据'}</td><td>${formatNumber(row.current.totalOrders)}</td><td>${comparison.hasPreviousData ? formatNumber(row.previous.totalOrders) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalOrders, row.previous.totalOrders) : '无对比数据'}</td><td>${formatRuble(row.current.totalRevenue)}</td><td>${comparison.hasPreviousData ? formatRuble(row.previous.totalRevenue) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalRevenue, row.previous.totalRevenue, formatRuble) : '无对比数据'}</td><td>${formatRuble(row.current.totalAdSpend)}</td><td>${comparison.hasPreviousData ? formatRuble(row.previous.totalAdSpend) : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalAdSpend, row.previous.totalAdSpend, formatRuble) : '无对比数据'}</td><td>${formatRuble(row.current.totalProfitRub)}<br><small>原始 ${formatYuan(row.current.totalProfitCny)}</small></td><td>${comparison.hasPreviousData ? `${formatRuble(row.previous.totalProfitRub)}<br><small>原始 ${formatYuan(row.previous.totalProfitCny)}</small>` : '无对比数据'}</td><td>${comparison.hasPreviousData ? change(row.current.totalProfitRub, row.previous.totalProfitRub, formatRuble) : '无对比数据'}</td><td>${formatNumber(row.current.roi)}</td><td>${comparison.hasPreviousData ? formatNumber(row.previous.roi) : '无对比数据'}</td><td>${formatPercent(row.current.acos)}</td><td>${comparison.hasPreviousData ? formatPercent(row.previous.acos) : '无对比数据'}</td><td>${html(row.judge)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function renderIntervalSummary(comparison) {
