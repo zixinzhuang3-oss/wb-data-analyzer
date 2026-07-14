@@ -1,7 +1,9 @@
 export const AUXILIARY_SHEET_PATTERNS = [
+  /^日报$/i,
+  /^总体利润$/i,
   /利润定价表/i,
-  /ozon/i,
   /wb利润/i,
+  /ozon利润/i,
   /^sheet\s*\d+$/i,
   /^sheet\d+$/i,
   /汇总/i,
@@ -9,7 +11,7 @@ export const AUXILIARY_SHEET_PATTERNS = [
   /模板/i,
 ];
 
-export const SKU_SHEET_PATTERN = /^[A-Z]{2}\d{3,}[A-Z0-9]*$/i;
+export const SKU_SHEET_PATTERN = /^ES[0-9A-Z]+$/i;
 
 export const DAILY_FIELDS = [
   { key: 'platform', label: '平台', aliases: ['平台', 'platform'] },
@@ -63,10 +65,12 @@ export const NUMERIC_FIELD_KEYS = new Set([
   'acquiringFee', 'storageFee', 'remittanceFee', 'profit', 'keywordRank',
 ]);
 
+export const normalizeSkuSheetName = (sheetName) => String(sheetName || '').trim().toUpperCase();
+
 export const isAuxiliarySheet = (sheetName) => AUXILIARY_SHEET_PATTERNS.some((pattern) => pattern.test(String(sheetName).trim()));
 
 export const isSkuSheet = (sheetName) => {
-  const name = String(sheetName).trim();
+  const name = normalizeSkuSheetName(sheetName);
   return !isAuxiliarySheet(name) && SKU_SHEET_PATTERN.test(name);
 };
 

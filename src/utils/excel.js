@@ -1,4 +1,4 @@
-import { DAILY_FIELDS, NUMERIC_FIELD_KEYS, fieldLabels, isSkuSheet } from './fields.js';
+import { DAILY_FIELDS, NUMERIC_FIELD_KEYS, fieldLabels, isSkuSheet, normalizeSkuSheetName } from './fields.js';
 import { buildActionKey, normalizePlatform, parseOperationActionText } from './actions.js';
 import { CNY_TO_RUB } from './currency.js';
 import { normalizeDateKey } from './date.js';
@@ -54,14 +54,14 @@ const FIXED_COLUMNS = {
 
 const FIXED_COLUMN_LABELS = {
   date: 'A列',
-  dealPriceRub: 'E 列，单位 ₽',
+  dealPriceRub: 'E列',
   impressions: 'N列',
   clicks: 'O列',
   ctr: 'P列',
   addToCart: 'Q列',
   conversionRate: 'R列',
-  revenue: 'AA 列，单位 ₽',
-  adSpend: 'AB 列，单位 ₽',
+  revenue: 'AA列',
+  adSpend: 'AB列',
   adOrders: 'AC列',
   adShare: 'AD列',
   adCtr: 'AE列',
@@ -77,8 +77,8 @@ const FIXED_COLUMN_LABELS = {
 
 const DIAGNOSTIC_FIELD_LABELS = {
   dealPriceRub: '成交价',
-  revenue: '总订单销售额（不含刷单）',
-  adSpend: '总广告费',
+  revenue: '销售额',
+  adSpend: '广告费',
   profit: '利润',
 };
 
@@ -152,7 +152,8 @@ export const hasEffectiveDailyData = hasValidBusinessData;
 export const normalizeSheetRow = (sheetName, headers, row, XLSX, platform = 'WB') => {
   const normalizedPlatform = normalizePlatform(platform);
   const headerMap = buildHeaderMap(headers);
-  const record = { platform: normalizedPlatform, sku: sheetName.trim(), sourceSheet: sheetName.trim() };
+  const normalizedSheetName = normalizeSkuSheetName(sheetName);
+  const record = { platform: normalizedPlatform, sku: normalizedSheetName, sourceSheet: String(sheetName || '').trim() };
   record.dealPriceRubRaw = row[FIXED_COLUMNS.dealPriceRub] ?? '';
   const rawBusinessFields = {};
   DAILY_FIELDS.forEach((field) => {
@@ -182,9 +183,9 @@ export const normalizeSheetRow = (sheetName, headers, row, XLSX, platform = 'WB'
 };
 
 export const buildSheetDiagnostics = (sheetName, rows, headerIndex, XLSX) => ({
-  sheetName,
+  sheetName: normalizeSkuSheetName(sheetName),
   fields: Object.fromEntries(Object.entries(FIXED_COLUMN_LABELS).map(([key, column]) => [DIAGNOSTIC_FIELD_LABELS[key] || fieldLabels[key] || key, column])),
-  dealPriceSamples: rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).slice(0, 5).map((row, offset) => ({ sku: sheetName, date: toIsoDate(row[FIXED_COLUMNS.date], XLSX), rowNumber: headerIndex + 2 + offset, raw: row[FIXED_COLUMNS.dealPriceRub] ?? '', parsed: toNumber(row[FIXED_COLUMNS.dealPriceRub]), field: 'dealPriceRub', column: 'E列' })),
+  dealPriceSamples: rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).slice(0, 5).map((row, offset) => ({ sku: normalizeSkuSheetName(sheetName), date: toIsoDate(row[FIXED_COLUMNS.date], XLSX), rowNumber: headerIndex + 2 + offset, raw: row[FIXED_COLUMNS.dealPriceRub] ?? '', parsed: toNumber(row[FIXED_COLUMNS.dealPriceRub]), field: 'dealPriceRub', column: 'E列' })),
   blankAdDates: rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row) && AD_FIELD_KEYS.every((key) => isBlank(row[FIXED_COLUMNS[key]]))).map((row) => toIsoDate(row[FIXED_COLUMNS.date], XLSX)).filter(Boolean),
 });
 
@@ -248,14 +249,15 @@ export const parseExcelWorkbook = async (file, platform = 'WB') => {
   const XLSX = await loadSheetJs();
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
-  const skippedSheets = workbook.SheetNames.filter((name) => !isSkuSheet(name));
-  const skuSheets = workbook.SheetNames.filter(isSkuSheet);
+  const skippedSheets = workbook.SheetNames.filter((name) => !isSkuSheet(name)).map((name) => String(name || '').trim());
+  const skuSheets = workbook.SheetNames.filter(isSkuSheet).map(normalizeSkuSheetName);
   const records = [];
   const actions = [];
   const diagnostics = [];
 
-  skuSheets.forEach((sheetName) => {
-    const worksheet = workbook.Sheets[sheetName];
+  workbook.SheetNames.filter(isSkuSheet).forEach((rawSheetName) => {
+    const sheetName = normalizeSkuSheetName(rawSheetName);
+    const worksheet = workbook.Sheets[rawSheetName];
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: true, blankrows: false });
     const headerIndex = findHeaderRowIndex(rows);
     if (headerIndex < 0) return;
