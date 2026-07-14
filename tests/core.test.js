@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { buildSheetDiagnostics, hasEffectiveDailyData, normalizeSheetRow, toIsoDate, toNumber } from '../src/utils/excel.js';
+import { isSkuSheet, normalizeSkuSheetName, SKU_SHEET_PATTERN } from '../src/utils/fields.js';
 import { parseOperationActionText, normalizeAction, actionToSummary, buildActionKey, getActionRecord, getEffectiveAction, mergeActionRecords, normalizeDate, normalizePlatform, normalizeSku, shouldReplaceAction, validateCpmMinBids } from '../src/utils/actions.js';
 import { buildEffectAnalysis, buildSkuActionHistory } from '../src/utils/effectAnalysis.js';
 import { buildComparison, filterRecords, getSkuOptions, resolveDateRange } from '../src/utils/history.js';
@@ -21,7 +22,32 @@ assert.equal(toNumber('1,512.50 ₽'), 1512.5);
 assert.equal(toNumber('0 ₽'), 0);
 assert.equal(toNumber('  '), 0);
 
+const ozonSheetNames = ['ES068BK', 'ES033BK', 'ES666G', 'ES823E', 'ES920E', 'ES113BO', 'ES500BK', 'ES030BK', 'ES033GN', 'ES033BU', '日报', '总体利润'];
+const detectedOzonSkuSheets = ozonSheetNames.filter(isSkuSheet).map(normalizeSkuSheetName);
+assert.equal(SKU_SHEET_PATTERN.test('ES033GN'), true);
+assert.equal(isSkuSheet(' ES033GN '), true);
+assert.deepEqual(detectedOzonSkuSheets, ['ES068BK', 'ES033BK', 'ES666G', 'ES823E', 'ES920E', 'ES113BO', 'ES500BK', 'ES030BK', 'ES033GN', 'ES033BU']);
+assert.equal(detectedOzonSkuSheets.length, 10);
+assert.equal(isSkuSheet('日报'), false);
+assert.equal(isSkuSheet('总体利润'), false);
+assert.equal(isSkuSheet('利润定价表'), false);
+assert.equal(isSkuSheet('Sheet10'), false);
+
+const skuDropdownRows = [
+  { platform: 'Ozon', date: '2026-06-21', sku: 'ES033GN', uniqueKey: 'Ozon_2026-06-21_ES033GN', totalOrders: 1, revenue: 100, hasValidBusinessData: true },
+  { platform: 'Ozon', date: '2026-06-22', sku: 'ES030BK', uniqueKey: 'Ozon_2026-06-22_ES030BK', totalOrders: 1, revenue: 100, hasValidBusinessData: true },
+  { platform: 'WB', date: '2026-06-22', sku: 'ES033GN', uniqueKey: 'WB_2026-06-22_ES033GN', totalOrders: 1, revenue: 100, hasValidBusinessData: true },
+];
+assert.ok(getSkuOptions(skuDropdownRows, 'Ozon').includes('ES033GN'));
+assert.deepEqual(getSkuOptions(skuDropdownRows, 'all').filter((sku) => sku.endsWith('__ES033GN')).sort(), ['Ozon__ES033GN', 'WB__ES033GN']);
+assert.equal(buildActionKey('2026-06-22', 'ES033GN', 'Ozon'), 'Ozon_2026-06-22_ES033GN');
+
 const realToday = '2026-06-22';
+
+const normalizedOzonRow = normalizeSheetRow(' es033gn ', ['日期', '总订单'], ['2026-06-22', 1], XLSX, 'Ozon');
+assert.equal(normalizedOzonRow.platform, 'Ozon');
+assert.equal(normalizedOzonRow.sku, 'ES033GN');
+assert.equal(normalizedOzonRow.uniqueKey, 'Ozon_2026-06-22_ES033GN');
 assert.deepEqual(buildQuickRange('today', realToday), { allDates: false, startDate: '2026-06-22', endDate: '2026-06-22' });
 assert.deepEqual(buildQuickRange('yesterday', realToday), { allDates: false, startDate: '2026-06-21', endDate: '2026-06-21' });
 assert.deepEqual(buildQuickRange('3', realToday), { allDates: false, startDate: '2026-06-20', endDate: '2026-06-22' });
@@ -36,6 +62,16 @@ assert.deepEqual(networkToday, { date: '2026-06-22', source: '网络时间', tim
 const fallbackToday = await getTodayDate({ timeZone: 'Asia/Shanghai', fetchImpl: async () => { throw new Error('offline'); } });
 assert.match(fallbackToday.date, /^\d{4}-\d{2}-\d{2}$/);
 assert.equal(fallbackToday.source, '浏览器本地时间');
+
+const es033gnDiagnostics = buildSheetDiagnostics(' es033gn ', [['日期', '总订单'], ['2026-06-22', 1]], 0, XLSX);
+assert.equal(es033gnDiagnostics.sheetName, 'ES033GN');
+assert.equal(es033gnDiagnostics.fields['成交价'], 'E列');
+assert.equal(es033gnDiagnostics.fields['销售额'], 'AA列');
+assert.equal(es033gnDiagnostics.fields['广告费'], 'AB列');
+assert.equal(es033gnDiagnostics.fields['曝光'], 'N列');
+assert.equal(es033gnDiagnostics.fields['点击'], 'O列');
+assert.equal(es033gnDiagnostics.fields['广告曝光'], 'AF列');
+assert.equal(es033gnDiagnostics.fields['广告点击'], 'AG列');
 
 const invalidDateEffective = getEffectiveAction([], 'invalid-date', 'ES920E');
 assert.equal(invalidDateEffective.action, null);
@@ -482,14 +518,14 @@ const priceStrategy = buildEffectAnalysis([
 ], [normalizeAction({ date: '2026-06-22', sku: 'ESP', priceAction: '涨价', source: 'price_auto' })], { date: '2026-06-22', sku: 'ESP' })[0];
 assert.match(priceStrategy.recommendations.map((item) => item.reason).join('\n'), /涨价后订单、销售额和利润下降|恢复原价或参加活动/);
 const priceDiagnostics = buildSheetDiagnostics('ES032BK', [fixedHeaders, priceRowA], 0, XLSX);
-assert.equal(priceDiagnostics.fields['成交价'], 'E 列，单位 ₽');
+assert.equal(priceDiagnostics.fields['成交价'], 'E列');
 assert.equal(priceDiagnostics.dealPriceSamples[0].raw, '2,703 ₽');
 assert.equal(priceDiagnostics.dealPriceSamples[0].parsed, 2703);
 assert.equal(priceDiagnostics.dealPriceSamples[0].field, 'dealPriceRub');
 
 const diagnostics = buildSheetDiagnostics('ES068BK', [fixedHeaders, fixedRow], 0, XLSX);
-assert.equal(diagnostics.fields['总订单销售额（不含刷单）'], 'AA 列，单位 ₽');
-assert.equal(diagnostics.fields['总广告费'], 'AB 列，单位 ₽');
+assert.equal(diagnostics.fields['销售额'], 'AA列');
+assert.equal(diagnostics.fields['广告费'], 'AB列');
 
 const blankAdRow = [...fixedRow];
 for (let i = 27; i <= 36; i += 1) blankAdRow[i] = '';

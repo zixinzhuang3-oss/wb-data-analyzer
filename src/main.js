@@ -158,7 +158,7 @@ function renderImportSummary() {
     <span>覆盖经营数据：${recordsOverwritten} 条</span>
     <span>Excel 自动识别动作：${actionCount} 条</span>
     <span>保留手动动作：${keptManualActions} 条</span>
-    <span>识别 SKU：${skuSheets.map(html).join('、') || '-'}</span>
+    <span>识别 SKU sheet ${skuSheets.length} 个：${skuSheets.map(html).join('、') || '-'}</span>
     <span>跳过辅助 sheet：${skippedSheets.map(html).join('、') || '-'}</span>
   </div>`;
 }
