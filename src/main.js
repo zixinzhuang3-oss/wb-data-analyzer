@@ -1,5 +1,5 @@
 import { parseExcelWorkbook } from './utils/excel.js';
-import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup, saveAction, saveExcelActions, saveRecords } from './utils/storage.js';
+import { deleteAction, exportBackup, getAllActions, getAllRecords, getAllSkuCatalog, importBackup, saveAction, saveExcelActions, saveRecords, saveSkuCatalog } from './utils/storage.js';
 import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
@@ -12,6 +12,7 @@ const root = document.getElementById('root');
 const state = {
   records: [],
   actions: [],
+  skuCatalog: [],
   actionDraft: createEmptyAction(),
   filters: { platform: 'all', startDate: '', endDate: '', allDates: false, sku: '' },
   importPlatform: 'WB',
@@ -58,13 +59,15 @@ const downloadJson = (filename, data) => {
 
 async function refreshRecords() {
   try {
-    const [records, actions] = await Promise.all([getAllRecords(), getAllActions()]);
+    const [records, actions, skuCatalog] = await Promise.all([getAllRecords(), getAllActions(), getAllSkuCatalog()]);
     state.records = Array.isArray(records) ? records : [];
     state.actions = Array.isArray(actions) ? actions : [];
+    state.skuCatalog = Array.isArray(skuCatalog) ? skuCatalog : [];
   } catch (error) {
     console.warn('读取 IndexedDB 失败，已使用空数据继续初始化。', error);
     state.records = [];
     state.actions = [];
+    state.skuCatalog = [];
     state.status = 'IndexedDB 暂无可用数据或存在旧版本脏数据，页面已使用空状态打开。';
   }
 }
@@ -76,7 +79,8 @@ async function handleExcelUpload(file) {
   render();
   try {
     const result = await parseExcelWorkbook(file, state.importPlatform);
-    if (!result.records.length) throw new Error('没有识别到有效 SKU sheet 或有效每日数据行。');
+    if (!result.skuCatalog?.length) throw new Error('没有识别到符合 ES[0-9A-Z]+ 的 SKU sheet。');
+    const catalogStats = await saveSkuCatalog(result.skuCatalog || []);
     const recordStats = await saveRecords(result.records);
     const actionStats = await saveExcelActions(result.actions || []);
     await refreshRecords();
@@ -88,11 +92,16 @@ async function handleExcelUpload(file) {
       recordsOverwritten: recordStats.overwritten,
       actionCount: actionStats.autoActionAdded,
       keptManualActions: actionStats.keptManualActions,
+      catalogAdded: catalogStats.added,
+      catalogOverwritten: catalogStats.overwritten,
       skuSheets: result.skuSheets,
       skippedSheets: result.skippedSheets,
+      rawSheets: result.rawSheets || [],
+      skuCatalog: result.skuCatalog || [],
+      sheetDiagnostics: result.sheetDiagnostics || null,
       diagnostics: result.diagnostics || [],
     };
-    state.status = `导入完成：新增经营数据 ${recordStats.added} 条，覆盖经营数据 ${recordStats.overwritten} 条，自动识别动作记录 ${actionStats.autoActionAdded} 条，被保留的手动动作记录 ${actionStats.keptManualActions} 条。`;
+    state.status = `导入完成：更新 SKU 目录 ${catalogStats.total} 个，新增经营数据 ${recordStats.added} 条，覆盖经营数据 ${recordStats.overwritten} 条，自动识别动作记录 ${actionStats.autoActionAdded} 条，被保留的手动动作记录 ${actionStats.keptManualActions} 条。`;
   } catch (error) {
     state.status = `导入失败：${error.message || error}`;
   } finally {
@@ -150,16 +159,20 @@ const renderOptions = (options, current, placeholder) => [`<option value="">${pl
 
 function renderImportSummary() {
   if (!state.lastImport) return '<p class="empty-state">尚未导入 Excel。本阶段会自动跳过 wb利润定价表、ozon利润定价表、Sheet10 等辅助 sheet。</p>';
-  const { fileName, savedCount, recordsAdded = 0, recordsOverwritten = 0, actionCount = 0, keptManualActions = 0, skuSheets, skippedSheets } = state.lastImport;
+  const { fileName, savedCount, recordsAdded = 0, recordsOverwritten = 0, actionCount = 0, keptManualActions = 0, catalogAdded = 0, catalogOverwritten = 0, rawSheets = [], skuSheets = [], skippedSheets = [], skuCatalog = [], sheetDiagnostics = null } = state.lastImport;
+  const parseRows = sheetDiagnostics?.skuParseDiagnostics || skuCatalog.map((item) => ({ sku: item.sku, parsedRowCount: item.parsedRowCount || 0, message: item.parsedRowCount > 0 ? `${item.sku}：解析到 ${item.parsedRowCount} 行有效数据` : `${item.sku}：已识别为 SKU，但当前未解析到有效数据` }));
   return `<div class="import-result">
     <strong>${html(fileName)}</strong>
     <span>保存/覆盖 ${savedCount} 行</span>
+    <span>SKU 目录新增：${catalogAdded} 个；更新：${catalogOverwritten} 个</span>
     <span>新增经营数据：${recordsAdded} 条</span>
     <span>覆盖经营数据：${recordsOverwritten} 条</span>
     <span>Excel 自动识别动作：${actionCount} 条</span>
     <span>保留手动动作：${keptManualActions} 条</span>
+    <span>Excel 原始 sheet：${(rawSheets.length ? rawSheets : [...skuSheets, ...skippedSheets]).map(html).join('、') || '-'}</span>
     <span>识别 SKU sheet ${skuSheets.length} 个：${skuSheets.map(html).join('、') || '-'}</span>
     <span>跳过辅助 sheet：${skippedSheets.map(html).join('、') || '-'}</span>
+    <span>每个 SKU 解析行数：${parseRows.map((item) => html(item.message)).join('；') || '-'}</span>
   </div>`;
 }
 
@@ -582,10 +595,11 @@ function render() {
   if (!state.defaultRangeApplied && state.today.date && !state.filters.startDate && !state.filters.endDate && !state.filters.allDates) applyDefaultQuickRange();
   const safeRecords = Array.isArray(state.records) ? state.records : [];
   const safeActions = Array.isArray(state.actions) ? state.actions : [];
+  const safeSkuCatalog = Array.isArray(state.skuCatalog) ? state.skuCatalog : [];
   const filtered = filterRecords(safeRecords, state.filters);
   const comparison = buildComparison(safeRecords, state.filters);
   const dates = getDateOptions(safeRecords);
-  const skus = getSkuOptions(safeRecords, state.filters.platform);
+  const skus = getSkuOptions(safeRecords, state.filters.platform, safeSkuCatalog);
   const selectedRecord = safeRecords.find((record) => record.uniqueKey === state.selectedDetailKey) || filtered[0];
   const selectedAction = selectedRecord ? findAction(selectedRecord.date, selectedRecord.sku, selectedRecord.platform) : null;
   const effectAnalyses = buildEffectAnalysis(safeRecords, safeActions, state.filters);
@@ -635,7 +649,7 @@ function render() {
 
     ${renderModule('区间汇总', () => renderIntervalSummary(comparison))}
     ${renderModule('SKU 对比', () => renderSkuComparison(comparison))}
-    ${renderModule('每日动作记录', () => renderActionModule(dates, getSkuOptions(safeRecords, state.actionDraft.platform || 'WB')))}
+    ${renderModule('每日动作记录', () => renderActionModule(dates, getSkuOptions(safeRecords, state.actionDraft.platform || 'WB', safeSkuCatalog)))}
     ${renderModule('动作记录诊断', renderActionDiagnostics)}
     ${renderModule('明日策略建议看板', () => renderStrategyBoard(effectAnalyses, comparison))}
     ${renderModule('动作效果分析卡片', () => renderEffectCards(effectAnalyses))}
