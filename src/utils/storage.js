@@ -2,10 +2,11 @@ import { buildActionKey, normalizeAction, mergeActionRecords, normalizePlatform,
 import { normalizeDateKey } from './date.js';
 
 const DB_NAME = 'wb-daily-ops-review';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const RECORD_STORE = 'dailyRecords';
 const ACTION_STORE = 'dailyActions';
 const RECOMMENDATION_STORE = 'recommendationHistory';
+const SKU_CATALOG_STORE = 'skuCatalog';
 
 const ensureStore = (db, name, transaction) => {
   const store = db.objectStoreNames.contains(name)
@@ -24,6 +25,7 @@ const openDb = () => new Promise((resolve, reject) => {
     ensureStore(db, RECORD_STORE, transaction);
     ensureStore(db, ACTION_STORE, transaction);
     ensureStore(db, RECOMMENDATION_STORE, transaction);
+    ensureStore(db, SKU_CATALOG_STORE, transaction);
   };
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error);
@@ -78,6 +80,44 @@ export const saveRecords = async (records) => {
   db.close();
   return { added, overwritten, total: records.length };
 };
+
+
+const normalizeSkuCatalogItem = (item) => {
+  const platform = normalizePlatform(item.platform);
+  const sku = normalizeSku(item.sku);
+  const parsedRowCount = Number(item.parsedRowCount) || 0;
+  return {
+    ...item,
+    platform,
+    sku,
+    sheetName: String(item.sheetName || sku).trim(),
+    importedAt: item.importedAt || new Date().toISOString(),
+    hasParsedRows: Boolean(item.hasParsedRows || parsedRowCount > 0),
+    parsedRowCount,
+    uniqueKey: `${platform}_${sku}`,
+  };
+};
+
+export const saveSkuCatalog = async (items = []) => {
+  const db = await openDb();
+  const transaction = db.transaction(SKU_CATALOG_STORE, 'readwrite');
+  const store = transaction.objectStore(SKU_CATALOG_STORE);
+  let added = 0;
+  let overwritten = 0;
+  await Promise.all((Array.isArray(items) ? items : []).map(async (item) => {
+    const normalized = normalizeSkuCatalogItem(item);
+    if (!normalized.sku) return;
+    const existing = await getFromStore(store, normalized.uniqueKey);
+    if (existing) overwritten += 1;
+    else added += 1;
+    store.put(normalized);
+  }));
+  await txDone(transaction);
+  db.close();
+  return { added, overwritten, total: items.length };
+};
+
+export const getAllSkuCatalog = () => getAllFromStore(SKU_CATALOG_STORE);
 
 export const getAllRecords = () => getAllFromStore(RECORD_STORE);
 export const getAllActions = async () => {
@@ -174,8 +214,9 @@ const normalizeRecommendation = (item) => {
 
 export const exportBackup = async () => ({
   exportedAt: new Date().toISOString(),
-  version: 4,
+  version: 5,
   records: await getAllRecords(),
+  skuCatalog: await getAllSkuCatalog(),
   actionRecords: await getAllActions(),
   actions: await getAllActions(),
   recommendationHistory: await getAllRecommendationHistory(),
@@ -188,12 +229,14 @@ export const importBackup = async (backup) => {
   const incomingActions = (Array.isArray(backup.actionRecords) ? backup.actionRecords : backup.actions || [])
     .map((action) => normalizeAction({ ...action, source: action.source || 'json_import' }));
   const incomingRecommendations = (backup.recommendationHistory || []).map(normalizeRecommendation);
+  const incomingSkuCatalog = (backup.skuCatalog || []).map(normalizeSkuCatalogItem);
   const db = await openDb();
-  const transaction = db.transaction([RECORD_STORE, ACTION_STORE, RECOMMENDATION_STORE], 'readwrite');
+  const transaction = db.transaction([RECORD_STORE, ACTION_STORE, RECOMMENDATION_STORE, SKU_CATALOG_STORE], 'readwrite');
   const recordStore = transaction.objectStore(RECORD_STORE);
   const actionStore = transaction.objectStore(ACTION_STORE);
   const recommendationStore = transaction.objectStore(RECOMMENDATION_STORE);
-  const stats = { recordsAdded: 0, recordsOverwritten: 0, actionsAdded: 0, actionsOverwritten: 0, actionsKeptLocal: 0, currentActionTotal: 0, recommendationsAdded: 0, recommendationsOverwritten: 0 };
+  const skuCatalogStore = transaction.objectStore(SKU_CATALOG_STORE);
+  const stats = { recordsAdded: 0, recordsOverwritten: 0, actionsAdded: 0, actionsOverwritten: 0, actionsKeptLocal: 0, currentActionTotal: 0, recommendationsAdded: 0, recommendationsOverwritten: 0, skuCatalogAdded: 0, skuCatalogOverwritten: 0 };
   await Promise.all(incomingRecords.map(async (record) => {
     const existing = await getFromStore(recordStore, record.uniqueKey);
     if (existing) stats.recordsOverwritten += 1;
@@ -211,6 +254,12 @@ export const importBackup = async (backup) => {
   stats.actionsKeptLocal = actionStats.keptLocal;
   stats.currentActionTotal = actions.length;
   actions.forEach((action) => actionStore.put(action));
+  await Promise.all(incomingSkuCatalog.map(async (item) => {
+    const existing = await getFromStore(skuCatalogStore, item.uniqueKey);
+    if (existing) stats.skuCatalogOverwritten += 1;
+    else stats.skuCatalogAdded += 1;
+    skuCatalogStore.put(item);
+  }));
   await Promise.all(incomingRecommendations.map(async (item) => {
     const existing = await getFromStore(recommendationStore, item.uniqueKey);
     if (existing) stats.recommendationsOverwritten += 1;

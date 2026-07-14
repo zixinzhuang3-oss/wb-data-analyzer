@@ -13,10 +13,21 @@ const toDate = (date) => new Date(`${date}T00:00:00Z`);
 export { addDays };
 
 export const getPlatformOptions = () => ['all', 'WB', 'Ozon'];
-export const getSkuOptions = (records, platform = 'all') => {
+export const getSkuOptions = (records = [], platform = 'all', skuCatalog = []) => {
   const targetPlatform = platform === 'all' || !platform ? 'all' : normalizePlatform(platform);
-  const rows = records.filter((record) => targetPlatform === 'all' || normalizePlatform(record.platform) === targetPlatform);
-  return [...new Set(rows.map((record) => targetPlatform === 'all' ? buildPlatformSkuKey(record.platform, record.sku) : normalizeSku(record.sku)).filter(Boolean))].sort();
+  const rows = Array.isArray(records) ? records : [];
+  const catalogRows = Array.isArray(skuCatalog) ? skuCatalog : [];
+  const options = new Set();
+  const add = (platformValue, skuValue) => {
+    const normalizedSku = normalizeSku(skuValue);
+    if (!normalizedSku) return;
+    const normalizedPlatform = normalizePlatform(platformValue);
+    if (targetPlatform !== 'all' && normalizedPlatform !== targetPlatform) return;
+    options.add(targetPlatform === 'all' ? buildPlatformSkuKey(normalizedPlatform, normalizedSku) : normalizedSku);
+  };
+  catalogRows.forEach((item) => add(item.platform, item.sku));
+  rows.forEach((record) => add(record.platform, record.sku));
+  return [...options].sort();
 };
 export const getDateOptions = (records) => [...new Set(records.map((record) => record.date).filter(Boolean))].sort().reverse();
 export const getLatestDate = (records) => getDateOptions(records)[0] || '';

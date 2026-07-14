@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { buildSheetDiagnostics, hasEffectiveDailyData, normalizeSheetRow, toIsoDate, toNumber } from '../src/utils/excel.js';
+import { buildSheetDiagnostics, buildSkuCatalogFromSheetNames, buildWorkbookSheetDiagnostics, hasEffectiveDailyData, normalizeSheetRow, toIsoDate, toNumber } from '../src/utils/excel.js';
 import { isSkuSheet, normalizeSkuSheetName, SKU_SHEET_PATTERN } from '../src/utils/fields.js';
 import { parseOperationActionText, normalizeAction, actionToSummary, buildActionKey, getActionRecord, getEffectiveAction, mergeActionRecords, normalizeDate, normalizePlatform, normalizeSku, shouldReplaceAction, validateCpmMinBids } from '../src/utils/actions.js';
 import { buildEffectAnalysis, buildSkuActionHistory } from '../src/utils/effectAnalysis.js';
@@ -32,6 +32,29 @@ assert.equal(isSkuSheet('日报'), false);
 assert.equal(isSkuSheet('总体利润'), false);
 assert.equal(isSkuSheet('利润定价表'), false);
 assert.equal(isSkuSheet('Sheet10'), false);
+
+const ozonParsedRowCounts = { ES068BK: 1, ES033BK: 1, ES666G: 1, ES823E: 1, ES920E: 1, ES113BO: 1, ES500BK: 1, ES030BK: 1, ES033BU: 1 };
+const ozonSkuCatalog = buildSkuCatalogFromSheetNames(ozonSheetNames, 'Ozon', ozonParsedRowCounts, '2026-07-14T00:00:00.000Z');
+assert.equal(ozonSkuCatalog.length, 10);
+assert.ok(ozonSkuCatalog.some((item) => item.uniqueKey === 'Ozon_ES033GN' && item.sku === 'ES033GN' && item.sheetName === 'ES033GN'));
+assert.equal(ozonSkuCatalog.find((item) => item.sku === 'ES033GN')?.hasParsedRows, false);
+assert.equal(ozonSkuCatalog.find((item) => item.sku === 'ES033GN')?.parsedRowCount, 0);
+assert.ok(getSkuOptions([], 'Ozon', ozonSkuCatalog).includes('ES033GN'));
+assert.ok(getSkuOptions([{ platform: 'Ozon', sku: 'ES030BK' }], 'Ozon', ozonSkuCatalog).includes('ES033GN'));
+assert.ok(getSkuOptions([], 'Ozon', ozonSkuCatalog).includes('ES033GN'));
+assert.ok(getSkuOptions([], 'all', ozonSkuCatalog).includes('Ozon__ES033GN'));
+assert.equal(getSkuOptions([], 'WB', ozonSkuCatalog).includes('ES033GN'), false);
+assert.equal(ozonSkuCatalog.some((item) => item.sku === '日报' || item.sku === '总体利润'), false);
+const ozonImportDiagnostics = buildWorkbookSheetDiagnostics(ozonSheetNames, ozonSkuCatalog);
+assert.deepEqual(ozonImportDiagnostics.rawSheets, ozonSheetNames);
+assert.deepEqual(ozonImportDiagnostics.skuSheets, detectedOzonSkuSheets);
+assert.deepEqual(ozonImportDiagnostics.skippedSheets, ['日报', '总体利润']);
+assert.match(ozonImportDiagnostics.skuParseDiagnostics.find((item) => item.sku === 'ES033GN')?.message || '', /已识别为 SKU，但当前未解析到有效数据/);
+const oldNineSkuCatalog = buildSkuCatalogFromSheetNames(ozonSheetNames.filter((name) => name !== 'ES033GN'), 'Ozon', ozonParsedRowCounts, '2026-07-13T00:00:00.000Z');
+const reimportedCatalogByKey = new Map([...oldNineSkuCatalog, ...ozonSkuCatalog].map((item) => [item.uniqueKey, item]));
+assert.equal(oldNineSkuCatalog.length, 9);
+assert.equal(reimportedCatalogByKey.size, 10);
+assert.ok(reimportedCatalogByKey.has('Ozon_ES033GN'));
 
 const skuDropdownRows = [
   { platform: 'Ozon', date: '2026-06-21', sku: 'ES033GN', uniqueKey: 'Ozon_2026-06-21_ES033GN', totalOrders: 1, revenue: 100, hasValidBusinessData: true },

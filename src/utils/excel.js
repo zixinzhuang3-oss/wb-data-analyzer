@@ -240,6 +240,42 @@ export const buildPriceAutoActions = (records = []) => {
   return actions.filter(Boolean);
 };
 
+
+export const buildSkuCatalogKey = (platform = 'WB', sku = '') => `${normalizePlatform(platform)}_${normalizeSkuSheetName(sku)}`;
+
+export const buildSkuCatalogFromSheetNames = (sheetNames = [], platform = 'WB', parsedRowCounts = {}, importedAt = new Date().toISOString()) => {
+  const normalizedPlatform = normalizePlatform(platform);
+  const catalog = new Map();
+  (Array.isArray(sheetNames) ? sheetNames : []).forEach((rawSheetName) => {
+    if (!isSkuSheet(rawSheetName)) return;
+    const sku = normalizeSkuSheetName(rawSheetName);
+    const parsedRowCount = Number(parsedRowCounts[sku] ?? parsedRowCounts[String(rawSheetName || '').trim()] ?? 0) || 0;
+    catalog.set(buildSkuCatalogKey(normalizedPlatform, sku), {
+      uniqueKey: buildSkuCatalogKey(normalizedPlatform, sku),
+      platform: normalizedPlatform,
+      sku,
+      sheetName: String(rawSheetName || '').trim(),
+      importedAt,
+      hasParsedRows: parsedRowCount > 0,
+      parsedRowCount,
+    });
+  });
+  return [...catalog.values()].sort((a, b) => a.sku.localeCompare(b.sku));
+};
+
+export const buildWorkbookSheetDiagnostics = (sheetNames = [], skuCatalog = [], parseReasons = {}) => {
+  const rawSheets = (Array.isArray(sheetNames) ? sheetNames : []).map((name) => String(name || '').trim());
+  const skuSheets = rawSheets.filter(isSkuSheet).map(normalizeSkuSheetName);
+  const skippedSheets = rawSheets.filter((name) => !isSkuSheet(name));
+  const counts = Object.fromEntries((Array.isArray(skuCatalog) ? skuCatalog : []).map((item) => [normalizeSkuSheetName(item.sku), Number(item.parsedRowCount) || 0]));
+  const skuParseDiagnostics = skuSheets.map((sku) => ({
+    sku,
+    parsedRowCount: counts[sku] || 0,
+    message: counts[sku] > 0 ? `${sku}：解析到 ${counts[sku]} 行有效数据` : (parseReasons[sku] ? `${sku}：字段读取失败，原因：${parseReasons[sku]}` : `${sku}：已识别为 SKU，但当前未解析到有效数据`),
+  }));
+  return { rawSheets, skuSheets, skippedSheets, skuParseDiagnostics };
+};
+
 const parseSheetByFixedColumns = (sheetName, headers, row, XLSX, platform) => normalizeSheetRow(sheetName, headers, row, XLSX, platform);
 export const parseWbSheet = parseSheetByFixedColumns;
 export const parseOzonSheet = parseSheetByFixedColumns;
@@ -249,18 +285,24 @@ export const parseExcelWorkbook = async (file, platform = 'WB') => {
   const XLSX = await loadSheetJs();
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
-  const skippedSheets = workbook.SheetNames.filter((name) => !isSkuSheet(name)).map((name) => String(name || '').trim());
-  const skuSheets = workbook.SheetNames.filter(isSkuSheet).map(normalizeSkuSheetName);
+  const rawSheets = workbook.SheetNames.map((name) => String(name || '').trim());
+  const skippedSheets = rawSheets.filter((name) => !isSkuSheet(name));
+  const skuSheets = rawSheets.filter(isSkuSheet).map(normalizeSkuSheetName);
   const records = [];
   const actions = [];
   const diagnostics = [];
+  const parsedRowCounts = {};
+  const parseReasons = {};
 
   workbook.SheetNames.filter(isSkuSheet).forEach((rawSheetName) => {
     const sheetName = normalizeSkuSheetName(rawSheetName);
     const worksheet = workbook.Sheets[rawSheetName];
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: true, blankrows: false });
     const headerIndex = findHeaderRowIndex(rows);
-    if (headerIndex < 0) return;
+    if (headerIndex < 0) {
+      parseReasons[sheetName] = '未找到包含日期和订单/利润/广告费的表头行';
+      return;
+    }
     diagnostics.push(buildSheetDiagnostics(sheetName, rows, headerIndex, XLSX));
     const headers = rows[headerIndex];
     rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).forEach((row) => {
@@ -268,6 +310,7 @@ export const parseExcelWorkbook = async (file, platform = 'WB') => {
       const record = parser(sheetName, headers, row, XLSX, normalizedPlatform);
       if (record.date && hasEffectiveDailyData(record)) {
         records.push(record);
+        parsedRowCounts[sheetName] = (parsedRowCounts[sheetName] || 0) + 1;
         const parsedAction = parseOperationActionText(record.operationAction, record.date, record.sku, record.platform);
         if (parsedAction) actions.push(parsedAction);
       }
@@ -275,6 +318,9 @@ export const parseExcelWorkbook = async (file, platform = 'WB') => {
   });
 
   actions.push(...buildPriceAutoActions(records));
+  const importedAt = new Date().toISOString();
+  const skuCatalog = buildSkuCatalogFromSheetNames(workbook.SheetNames, normalizedPlatform, parsedRowCounts, importedAt);
+  const sheetDiagnostics = buildWorkbookSheetDiagnostics(workbook.SheetNames, skuCatalog, parseReasons);
 
-  return { platform: normalizedPlatform, records, actions, skuSheets, skippedSheets, fieldLabels, diagnostics };
+  return { platform: normalizedPlatform, records, actions, skuCatalog, rawSheets, skuSheets, skippedSheets, sheetDiagnostics, fieldLabels, diagnostics };
 };
