@@ -12,6 +12,7 @@ export const AUXILIARY_SHEET_PATTERNS = [
 export const SKU_SHEET_PATTERN = /^[A-Z]{2}\d{3,}[A-Z0-9]*$/i;
 
 export const DAILY_FIELDS = [
+  { key: 'platform', label: '平台', aliases: ['平台', 'platform'] },
   { key: 'date', label: '日期', aliases: ['日期', 'date', '统计日期', '时间'] },
   { key: 'sku', label: 'SKU', aliases: ['SKU', 'sku', '产品', '商品编码'] },
   { key: 'adStatus', label: '广告状态', aliases: ['广告状态'] },

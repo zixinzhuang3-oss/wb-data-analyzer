@@ -1,6 +1,7 @@
 import { addDays } from './date.js';
 import { toProfitCny, toProfitRub } from './currency.js';
 import { hasValidBusinessData } from './excel.js';
+import { buildPlatformSkuKey, normalizePlatform, normalizeSku } from './actions.js';
 
 const DAY_MS = 86400000;
 const sum = (rows, key) => rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
@@ -11,7 +12,12 @@ const avgPresent = (rows, key) => { const values = rows.map((row) => Number(row[
 const toDate = (date) => new Date(`${date}T00:00:00Z`);
 export { addDays };
 
-export const getSkuOptions = (records) => [...new Set(records.map((record) => record.sku).filter(Boolean))].sort();
+export const getPlatformOptions = () => ['all', 'WB', 'Ozon'];
+export const getSkuOptions = (records, platform = 'all') => {
+  const targetPlatform = platform === 'all' || !platform ? 'all' : normalizePlatform(platform);
+  const rows = records.filter((record) => targetPlatform === 'all' || normalizePlatform(record.platform) === targetPlatform);
+  return [...new Set(rows.map((record) => targetPlatform === 'all' ? buildPlatformSkuKey(record.platform, record.sku) : normalizeSku(record.sku)).filter(Boolean))].sort();
+};
 export const getDateOptions = (records) => [...new Set(records.map((record) => record.date).filter(Boolean))].sort().reverse();
 export const getLatestDate = (records) => getDateOptions(records)[0] || '';
 
@@ -36,8 +42,10 @@ export const filterRecords = (records, filters = {}) => {
   return records.filter((record) => {
     if (!hasValidBusinessData(record)) return false;
     const dateMatched = range.allDates || (!range.startDate && !range.endDate) || (record.date >= range.startDate && record.date <= range.endDate);
-    const skuMatched = !filters.sku || record.sku === filters.sku;
-    return dateMatched && skuMatched;
+    const platform = normalizePlatform(record.platform);
+    const platformMatched = !filters.platform || filters.platform === 'all' || platform === normalizePlatform(filters.platform);
+    const skuMatched = !filters.sku || record.sku === filters.sku || buildPlatformSkuKey(platform, record.sku) === filters.sku;
+    return dateMatched && platformMatched && skuMatched;
   });
 };
 
@@ -58,7 +66,7 @@ export const summarizeRecords = (records) => {
   const avgDealPriceRub = avgPresent(records, 'dealPriceRub');
   return {
     dateCount: new Set(records.map((record) => record.date).filter(Boolean)).size,
-    skuCount: new Set(records.map((record) => record.sku).filter(Boolean)).size,
+    skuCount: new Set(records.map((record) => buildPlatformSkuKey(record.platform, record.sku)).filter(Boolean)).size,
     totalOrders,
     totalAdSpend,
     totalProfit,
@@ -104,7 +112,7 @@ export const summarizeByDate = (records) => {
   });
   return [...grouped.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([date, rows]) => ({
     date,
-    skuCount: new Set(rows.map((row) => row.sku)).size,
+    skuCount: new Set(rows.map((row) => buildPlatformSkuKey(row.platform, row.sku))).size,
     totalOrders: sum(rows, 'totalOrders'),
     totalRevenue: sum(rows, 'revenue'),
     avgDealPriceRub: avgPresent(rows, 'dealPriceRub'),

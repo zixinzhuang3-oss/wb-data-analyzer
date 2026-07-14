@@ -3,7 +3,7 @@ import { deleteAction, exportBackup, getAllActions, getAllRecords, importBackup,
 import { buildComparison, filterRecords, getDateOptions, getSkuOptions, summarizeByDate } from './utils/history.js';
 import { fieldLabels } from './utils/fields.js';
 import { formatPercent, formatRuble, formatYuan } from './utils/analysis.js';
-import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, buildActionKey, createEmptyAction, getActionRecord, getEffectiveAction, getCpmMinBidForAction, isActionContentEqual, normalizeAction, validateCpmMinBids } from './utils/actions.js';
+import { ACTION_FIELDS, ACTION_SOURCE_LABELS, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, actionToSummary, applyAdRules, buildActionKey, createEmptyAction, getActionRecord, getEffectiveAction, getCpmMinBidForAction, normalizePlatform, isActionContentEqual, normalizeAction, validateCpmMinBids } from './utils/actions.js';
 import { buildEffectAnalysis, buildSkuActionHistory, metricLabels } from './utils/effectAnalysis.js';
 import { buildQuickRange, formatLocalDateKey, getTodayDate } from './utils/date.js';
 import { toProfitCny, toProfitRub } from './utils/currency.js';
@@ -13,12 +13,13 @@ const state = {
   records: [],
   actions: [],
   actionDraft: createEmptyAction(),
-  filters: { startDate: '', endDate: '', allDates: false, sku: '' },
+  filters: { platform: 'all', startDate: '', endDate: '', allDates: false, sku: '' },
+  importPlatform: 'WB',
   today: { date: '', source: '浏览器本地时间', timeZone: 'Asia/Shanghai' },
   defaultRangeApplied: false,
   lastImport: null,
   selectedDetailKey: '',
-  status: '请上传包含 SKU sheet 的 Excel 文件，系统会把“日期 + SKU”作为唯一键保存到 IndexedDB。',
+  status: '请上传包含 SKU sheet 的 Excel 文件，系统会把“平台 + 日期 + SKU”作为唯一键保存到 IndexedDB。',
   busy: false,
 };
 
@@ -26,7 +27,7 @@ const html = (value) => String(value ?? '').replace(/[&<>"]/g, (char) => ({ '&':
 const formatNumber = (value) => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(Number(value) || 0);
 
 const displayFields = [
-  'date', 'sku', 'adStatus', 'linkId', 'operationAction', 'dealPriceRub', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders',
+  'platform', 'date', 'sku', 'adStatus', 'linkId', 'operationAction', 'dealPriceRub', 'price', 'reviews', 'rating', 'stock', 'reviewOrders', 'actualOrders',
   'totalOrders', 'impressions', 'clicks', 'ctr', 'addToCart', 'conversionRate', 'organicImpressions', 'organicClicks',
   'organicOrders', 'adSpend', 'adOrders', 'adShare', 'adCtr', 'adImpressions', 'adClicks', 'adClickAddToCartRate',
   'adAddToCart', 'adCostPerOrder', 'adAvgClickCost', 'revenue', 'commission', 'russiaCost',
@@ -74,7 +75,7 @@ async function handleExcelUpload(file) {
   state.status = `正在解析 ${file.name} ...`;
   render();
   try {
-    const result = await parseExcelWorkbook(file);
+    const result = await parseExcelWorkbook(file, state.importPlatform);
     if (!result.records.length) throw new Error('没有识别到有效 SKU sheet 或有效每日数据行。');
     const recordStats = await saveRecords(result.records);
     const actionStats = await saveExcelActions(result.actions || []);
@@ -144,7 +145,8 @@ async function handleEffectRefresh() {
   render();
 }
 
-const renderOptions = (options, current, placeholder) => [`<option value="">${placeholder}</option>`, ...options.map((option) => `<option value="${html(option)}" ${option === current ? 'selected' : ''}>${html(option)}</option>`)].join('');
+const optionLabel = (option) => String(option).includes('__') ? String(option).replace('__', ' ') : option;
+const renderOptions = (options, current, placeholder) => [`<option value="">${placeholder}</option>`, ...options.map((option) => `<option value="${html(option)}" ${option === current ? 'selected' : ''}>${html(optionLabel(option))}</option>`)].join('');
 
 function renderImportSummary() {
   if (!state.lastImport) return '<p class="empty-state">尚未导入 Excel。本阶段会自动跳过 wb利润定价表、ozon利润定价表、Sheet10 等辅助 sheet。</p>';
@@ -180,7 +182,7 @@ function renderTable(records) {
   if (!records.length) return '<p class="empty-state">当前时间段无数据</p>';
   const header = `<th>详情/动作</th>${displayFields.map((key) => `<th>${fieldLabels[key]}</th>`).join('')}<th>结构化动作</th>`;
   const rows = records.map((record) => {
-    const action = getActionRecord(state.actions, record.date, record.sku);
+    const action = getActionRecord(state.actions, record.date, record.sku, record.platform);
     return `<tr>
       <td><button class="table-action" data-detail-key="${html(record.uniqueKey)}" type="button">查看详情</button></td>
       ${displayFields.map((key) => `<td>${renderValue(key, record[key])}</td>`).join('')}
@@ -192,25 +194,29 @@ function renderTable(records) {
 
 
 const actionMap = () => new Map(state.actions.map((action) => [action.uniqueKey, action]));
-const findAction = (date, sku) => getActionRecord(state.actions, date, sku);
-const findEffectiveAction = (date, sku) => getEffectiveAction(state.actions, date, sku);
+const findAction = (date, sku, platform = 'WB') => getActionRecord(state.actions, date, sku, platform);
+const findEffectiveAction = (date, sku, platform = 'WB') => getEffectiveAction(state.actions, date, sku, undefined, platform);
 
-const getCurrentActionKey = () => buildActionKey(state.actionDraft.date || '', state.actionDraft.sku || '');
+const getCurrentActionKey = () => buildActionKey(state.actionDraft.date || '', state.actionDraft.sku || '', state.actionDraft.platform || 'WB');
 
 const setActionDraftFromKey = (uniqueKey) => {
   const record = state.records.find((item) => item.uniqueKey === uniqueKey);
   const separator = uniqueKey.indexOf('__') >= 0 ? '__' : '_';
-  const [date = '', sku = ''] = uniqueKey.split(separator);
+  const parts = uniqueKey.split(separator);
+  const hasPlatform = ['WB', 'Ozon'].includes(parts[0]);
+  const platform = record?.platform || (hasPlatform ? parts[0] : 'WB');
+  const date = record?.date || (hasPlatform ? parts[1] : parts[0]) || '';
+  const sku = record?.sku || (hasPlatform ? parts.slice(2).join(separator) : parts.slice(1).join(separator)) || '';
   const lookupDate = record?.date || date;
   const lookupSku = record?.sku || sku;
-  const effective = findEffectiveAction(lookupDate, lookupSku);
-  state.actionDraft = effective.action ? { ...effective.action, date: lookupDate, sku: lookupSku } : createEmptyAction(lookupDate, lookupSku);
+  const effective = findEffectiveAction(lookupDate, lookupSku, platform);
+  state.actionDraft = effective.action ? { ...effective.action, platform, date: lookupDate, sku: lookupSku } : createEmptyAction(lookupDate, lookupSku, platform);
 };
 
 async function handleActionSave() {
   const currentKey = getCurrentActionKey();
-  const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku);
-  const effective = getEffectiveAction(state.actions, state.actionDraft.date, state.actionDraft.sku);
+  const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku, state.actionDraft.platform);
+  const effective = getEffectiveAction(state.actions, state.actionDraft.date, state.actionDraft.sku, undefined, state.actionDraft.platform);
   const inheritedUnchanged = !existing && effective.isInherited && isActionContentEqual(state.actionDraft, effective.action);
   const action = normalizeAction({ ...state.actionDraft, source: existing ? 'manual_modified' : inheritedUnchanged ? 'inherited_saved' : 'manual_modified', originalActionDate: inheritedUnchanged ? effective.sourceActionDate : state.actionDraft.originalActionDate, sourceActionDate: inheritedUnchanged ? effective.sourceActionDate : state.actionDraft.sourceActionDate, effectiveFromDate: state.actionDraft.date, isInherited: false });
   if (!action.date || !action.sku) {
@@ -218,7 +224,7 @@ async function handleActionSave() {
     render();
     return;
   }
-  const bidErrors = validateCpmMinBids(action);
+  const bidErrors = normalizePlatform(action.platform) === 'WB' ? validateCpmMinBids(action) : [];
   if (bidErrors.length) {
     state.status = `动作保存失败：${bidErrors.join('；')}。CPM 搜索最低出价为 ${CPM_SEARCH_MIN_BID}，推荐最低出价为 ${CPM_RECOMMEND_MIN_BID}。`;
     render();
@@ -241,9 +247,13 @@ async function handleActionDelete(uniqueKey = getCurrentActionKey()) {
   await deleteAction(uniqueKey);
   await refreshRecords();
   const separator = uniqueKey.indexOf('__') >= 0 ? '__' : '_';
-  const [date, sku] = uniqueKey.split(separator);
-  state.actionDraft = createEmptyAction(date, sku);
-  state.status = `动作记录已删除：${date} ${sku}。`;
+  const parts = uniqueKey.split(separator);
+  const hasPlatform = ['WB', 'Ozon'].includes(parts[0]);
+  const platform = hasPlatform ? parts[0] : 'WB';
+  const date = hasPlatform ? parts[1] : parts[0];
+  const sku = hasPlatform ? parts.slice(2).join(separator) : parts.slice(1).join(separator);
+  state.actionDraft = createEmptyAction(date, sku, platform);
+  state.status = `动作记录已删除：${platform} ${date} ${sku}。`;
   render();
 }
 
@@ -277,10 +287,11 @@ function renderActionDiagnostics() {
   const date = state.actionDraft.date || state.selectedDetailKey.split(state.selectedDetailKey.includes('__') ? '__' : '_')[0] || '';
   const sku = state.actionDraft.sku || state.selectedDetailKey.split(state.selectedDetailKey.includes('__') ? '__' : '_')[1] || '';
   const previousDate = date ? buildQuickRange('yesterday', date).startDate : '';
-  const currentKey = buildActionKey(date, sku);
-  const previousKey = buildActionKey(previousDate, sku);
-  const currentAction = date && sku ? findAction(date, sku) : null;
-  const previousAction = previousDate && sku ? findAction(previousDate, sku) : null;
+  const platform = state.actionDraft.platform || 'WB';
+  const currentKey = buildActionKey(date, sku, platform);
+  const previousKey = buildActionKey(previousDate, sku, platform);
+  const currentAction = date && sku ? findAction(date, sku, platform) : null;
+  const previousAction = previousDate && sku ? findAction(previousDate, sku, platform) : null;
   return `<section class="panel"><div class="panel-heading"><span class="panel-icon">?</span><div><h2>动作记录诊断</h2><p>按统一日期 key 检查当前日期和上一日的动作记录是否存在。</p></div></div>
     <div class="metrics-grid">
       <div class="metric-card"><span>当前选择</span><strong>${html(date || '-')} / ${html(sku || '-')}</strong><small>${currentAction ? '有动作记录' : '无动作记录'} · key ${html(currentKey || '-')}</small></div>
@@ -294,13 +305,14 @@ function renderActionDiagnostics() {
 
 function renderActionModule(dates, skus) {
   const currentKey = getCurrentActionKey();
-  const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku);
-  const effective = getEffectiveAction(state.actions, state.actionDraft.date, state.actionDraft.sku);
+  const existing = getActionRecord(state.actions, state.actionDraft.date, state.actionDraft.sku, state.actionDraft.platform);
+  const effective = getEffectiveAction(state.actions, state.actionDraft.date, state.actionDraft.sku, undefined, state.actionDraft.platform);
   const sourceText = existing ? `当前日期已有保存动作。来源：${ACTION_SOURCE_LABELS[existing.source] || existing.source || '-'}。` : effective.isInherited ? `当前日期未保存新动作，正在沿用 ${effective.sourceActionDate} 的动作。如需从今天开始改变策略，请修改后点击保存。` : '该 SKU 暂无历史动作记录，请填写初始动作。';
   const groups = ['基础字段', 'CPC 模块', 'CPM 模块'].map((group) => `<fieldset class="action-fieldset"><legend>${group}</legend><div class="action-form-grid">${ACTION_FIELDS.filter((field) => field.group === group).map(renderActionField).join('')}</div></fieldset>`).join('');
   return `<section class="panel action-panel">
-    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div>
+    <div class="panel-heading"><span class="panel-icon">✎</span><div><h2>每日动作记录</h2><p>按“平台 + 日期 + SKU”记录基础动作，并把 CPC 模块与 CPM 模块独立维护；整体广告状态会根据 CPC/CPM 开关自动计算。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div>
     <div class="action-form-grid">
+      <label class="form-field"><span>平台</span><select id="action-platform"><option value="WB" ${state.actionDraft.platform === 'WB' ? 'selected' : ''}>WB</option><option value="Ozon" ${state.actionDraft.platform === 'Ozon' ? 'selected' : ''}>Ozon</option></select></label>
       <label class="form-field"><span>日期</span><select id="action-date"><option value="">选择日期</option>${dates.map((date) => `<option value="${html(date)}" ${date === state.actionDraft.date ? 'selected' : ''}>${html(date)}</option>`).join('')}</select></label>
       <label class="form-field"><span>SKU</span><select id="action-sku"><option value="">选择 SKU</option>${skus.map((sku) => `<option value="${html(sku)}" ${sku === state.actionDraft.sku ? 'selected' : ''}>${html(sku)}</option>`).join('')}</select></label>
     </div>
@@ -317,7 +329,7 @@ function renderActionModule(dates, skus) {
 function renderSkuDetail(record, action) {
   if (!record) return '<p class="empty-state">点击历史数据明细中的“查看详情”，即可同时查看每日数据和当天动作。</p>';
   return `<div class="detail-box">
-    <h3>${html(record.date)} · ${html(record.sku)}</h3>
+    <h3>${html(record.platform || 'WB')} · ${html(record.date)} · ${html(record.sku)}</h3>
     <div class="detail-grid">
       <div><span>总订单</span><strong>${formatNumber(record.totalOrders)}</strong></div>
       <div><span>成交价</span><strong>${formatRuble(record.dealPriceRub)}</strong><small>${html(record.priceActionMessage || '')}</small></div>
@@ -347,11 +359,11 @@ function renderStrategyBoard(analyses, comparison) {
   const allNoValidData = analyses.every((item) => item.noValidData);
   const context = allNoValidData ? '当前时间段暂无有效数据，请先导入数据。' : comparison?.hasPreviousData ? `当前区间 ${rangeText(comparison.currentRange)} 对比 ${rangeText(comparison.previousRange)}：订单变化 ${formatPercent(deltaInfo(comparison.current.totalOrders, comparison.previous.totalOrders).rate)}，广告费变化 ${formatPercent(deltaInfo(comparison.current.totalAdSpend, comparison.previous.totalAdSpend).rate)}，利润变化 ${formatRuble(deltaInfo(comparison.current.totalProfitRub, comparison.previous.totalProfitRub).value)}，成交价变化 ${formatRuble(deltaInfo(comparison.current.avgDealPriceRub, comparison.previous.avgDealPriceRub).value)}。明日策略会结合该区间趋势与每日动作。` : '当前筛选区间无对比数据，明日策略主要结合当前区间、最近日期和每日动作生成。';
   return `<section class="panel strategy-board"><div class="panel-heading"><span class="panel-icon">★</span><div><h2>明日策略建议看板</h2><p>结合当前选择时间段、7 天内最近动作、动作后 1/3/7 天窗口和每日动作历史，判断动作是否有效，并输出明日广告与运营建议。CPM 搜索出价最低：${CPM_SEARCH_MIN_BID}；CPM 推荐出价最低：${CPM_RECOMMEND_MIN_BID}。</p></div></div><p class="strategy-context">${html(context)}</p><div class="recommendation-grid">${analyses.map((item) => `<article class="recommendation-card priority-${item.primaryRecommendation.priority}">
-    <div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(item.date)}</span></div>
+    <div class="recommendation-head"><strong>${html(item.platform || 'WB')} ${html(item.sku)}</strong><span>${html(item.date)}</span></div>
     <h3>${html(item.noValidData ? '暂无当前日期数据' : item.primaryRecommendation.type)}</h3>
     <div class="mini-metrics action-meta">
       <span>当前分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
-      <span>SKU：${html(item.sku)}</span>
+      <span>平台：${html(item.platform || 'WB')}</span><span>SKU：${html(item.sku)}</span>
       <span>成交价：${formatRuble(item.metrics?.dealPriceRub?.today)}</span>
       <span>价格动作：${html(item.latestAction?.source === 'price_auto' ? `自动识别为${item.latestAction?.priceAction || '-'}` : item.latestAction?.priceAction || '-')}</span>
       <span>生效动作日期：${html(item.actionMeta?.effectiveActionDate || item.actionMeta?.usedActionDate || '-')}</span>
@@ -381,7 +393,7 @@ function renderEffectCards(analyses) {
       : item.actionMeta?.found
         ? `最近动作 → 当前结果：${actionSummary}；今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`
         : `${missingActionText} 今天订单 ${formatNumber(item.metrics.totalOrders.today)}，广告费 ${formatRuble(item.metrics.adSpend.today)}，利润 ${formatRuble(item.metrics.profit.today)}。`;
-    return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.sku)}</strong><span>${html(actionSummary)}</span></div>
+    return `<article class="effect-card"><div class="recommendation-head"><strong>${html(item.platform || 'WB')} ${html(item.sku)}</strong><span>${html(actionSummary)}</span></div>
       <div class="mini-metrics action-meta">
         <span>分析日期：${html(item.actionMeta?.analysisDate || item.date)}</span>
         <span>对比日期：${html(item.actionMeta?.comparisonDate || '-')}</span>
@@ -573,16 +585,16 @@ function render() {
   const filtered = filterRecords(safeRecords, state.filters);
   const comparison = buildComparison(safeRecords, state.filters);
   const dates = getDateOptions(safeRecords);
-  const skus = getSkuOptions(safeRecords);
+  const skus = getSkuOptions(safeRecords, state.filters.platform);
   const selectedRecord = safeRecords.find((record) => record.uniqueKey === state.selectedDetailKey) || filtered[0];
-  const selectedAction = selectedRecord ? findAction(selectedRecord.date, selectedRecord.sku) : null;
+  const selectedAction = selectedRecord ? findAction(selectedRecord.date, selectedRecord.sku, selectedRecord.platform) : null;
   const effectAnalyses = buildEffectAnalysis(safeRecords, safeActions, state.filters);
 
   root.innerHTML = `<main class="app-shell">
     <section class="hero">
       <div>
-        <p class="eyebrow">WB Daily Operations Review</p>
-        <h1>WB 每日运营复盘与广告策略决策系统</h1>
+        <p class="eyebrow">WB / Ozon Daily Operations Review</p>
+        <h1>WB / Ozon 每日运营复盘与广告策略决策系统</h1>
         <p>第一阶段已支持 Excel 模板解析、SKU sheet 自动识别、历史数据 IndexedDB 保存、重复日期 + SKU 覆盖更新，以及 JSON 备份恢复。</p>
       </div>
       <div class="hero-badge"><span class="hero-icon">▦</span><span>Excel 导入 · 历史保存 · 备份恢复</span></div>
@@ -591,6 +603,7 @@ function render() {
     <section class="panel import-panel">
       <div class="panel-heading"><span class="panel-icon">⇧</span><div><h2>导入 Excel 每日数据</h2><p>支持 .xlsx/.xls；只读取形如 ES032BK 的 SKU sheet，并自动过滤利润定价表、Sheet10 等辅助 sheet。</p></div></div>
       <div class="action-row">
+        <label class="form-field platform-upload"><span>导入平台</span><select id="import-platform"><option value="WB" ${state.importPlatform === 'WB' ? 'selected' : ''}>WB</option><option value="Ozon" ${state.importPlatform === 'Ozon' ? 'selected' : ''}>Ozon</option></select></label>
         <label class="primary-upload"><input id="excel-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />选择 Excel 文件</label>
         <button id="export-backup" type="button" ${state.records.length ? '' : 'disabled'}>导出备份 JSON</button>
         <label class="secondary-upload"><input id="backup-upload" type="file" accept=".json,application/json" />导入备份 JSON</label>
@@ -603,9 +616,10 @@ function render() {
     <section class="panel">
       <div class="panel-heading"><span class="panel-icon">▤</span><div><h2>筛选与汇总</h2><p>快捷时间段基于真实当前日期；销售额、广告费和页面主利润均为卢布 ₽；原始利润保留人民币 ¥，按固定汇率换算。</p></div></div>
       <div class="filter-row">
+        <label class="form-field"><span>平台</span><select id="platform-filter"><option value="all" ${state.filters.platform === 'all' ? 'selected' : ''}>全部平台</option><option value="WB" ${state.filters.platform === 'WB' ? 'selected' : ''}>WB</option><option value="Ozon" ${state.filters.platform === 'Ozon' ? 'selected' : ''}>Ozon</option></select></label>
         <label class="form-field"><span>开始日期</span><input id="start-date-filter" type="date" value="${html(state.filters.startDate)}" /></label>
         <label class="form-field"><span>结束日期</span><input id="end-date-filter" type="date" value="${html(state.filters.endDate)}" /></label>
-        <select id="sku-filter">${renderOptions(skus, state.filters.sku, '全部 SKU')}</select>
+        <select id="sku-filter">${renderOptions(skus, state.filters.sku, state.filters.platform === 'all' ? '全部平台 SKU' : '全部 SKU')}</select>
         <div class="quick-range-row">
           <button data-range-preset="today" type="button">今天</button>
           <button data-range-preset="yesterday" type="button">昨天</button>
@@ -621,7 +635,7 @@ function render() {
 
     ${renderModule('区间汇总', () => renderIntervalSummary(comparison))}
     ${renderModule('SKU 对比', () => renderSkuComparison(comparison))}
-    ${renderModule('每日动作记录', () => renderActionModule(dates, skus))}
+    ${renderModule('每日动作记录', () => renderActionModule(dates, getSkuOptions(safeRecords, state.actionDraft.platform || 'WB')))}
     ${renderModule('动作记录诊断', renderActionDiagnostics)}
     ${renderModule('明日策略建议看板', () => renderStrategyBoard(effectAnalyses, comparison))}
     ${renderModule('动作效果分析卡片', () => renderEffectCards(effectAnalyses))}
@@ -635,10 +649,12 @@ function render() {
     </section>
   </main>`;
 
+  document.getElementById('import-platform')?.addEventListener('change', (event) => { state.importPlatform = normalizePlatform(event.target.value); render(); });
   document.getElementById('excel-upload')?.addEventListener('change', (event) => handleExcelUpload(event.target.files?.[0]));
   document.getElementById('backup-upload')?.addEventListener('change', (event) => handleBackupImport(event.target.files?.[0]));
   document.getElementById('export-backup')?.addEventListener('click', handleBackupExport);
   document.getElementById('refresh-effect-analysis')?.addEventListener('click', handleEffectRefresh);
+  document.getElementById('platform-filter')?.addEventListener('change', (event) => { state.filters.platform = event.target.value; state.filters.sku = ''; render(); });
   document.getElementById('start-date-filter')?.addEventListener('change', (event) => { state.filters.startDate = event.target.value; state.filters.allDates = false; render(); });
   document.getElementById('end-date-filter')?.addEventListener('change', (event) => { state.filters.endDate = event.target.value; state.filters.allDates = false; render(); });
   document.getElementById('sku-filter')?.addEventListener('change', (event) => { state.filters.sku = event.target.value; render(); });
@@ -648,6 +664,7 @@ function render() {
     state.defaultRangeApplied = true;
     render();
   }));
+  document.getElementById('action-platform')?.addEventListener('change', (event) => { state.actionDraft.platform = normalizePlatform(event.target.value); setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.getElementById('action-date')?.addEventListener('change', (event) => { state.actionDraft.date = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.getElementById('action-sku')?.addEventListener('change', (event) => { state.actionDraft.sku = event.target.value; setActionDraftFromKey(getCurrentActionKey()); render(); });
   document.querySelectorAll('[data-action-field]').forEach((input) => {
@@ -656,7 +673,7 @@ function render() {
   });
   document.getElementById('save-action')?.addEventListener('click', handleActionSave);
   document.getElementById('delete-action')?.addEventListener('click', () => handleActionDelete());
-  document.getElementById('clear-action')?.addEventListener('click', () => { state.actionDraft = createEmptyAction(state.actionDraft.date, state.actionDraft.sku); render(); });
+  document.getElementById('clear-action')?.addEventListener('click', () => { state.actionDraft = createEmptyAction(state.actionDraft.date, state.actionDraft.sku, state.actionDraft.platform); render(); });
   document.querySelectorAll('[data-detail-key]').forEach((button) => button.addEventListener('click', (event) => {
     state.selectedDetailKey = event.target.dataset.detailKey;
     setActionDraftFromKey(state.selectedDetailKey);
