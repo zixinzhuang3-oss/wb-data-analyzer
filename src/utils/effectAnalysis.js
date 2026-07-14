@@ -1,7 +1,7 @@
 import { toProfitRub } from './currency.js';
 import { hasValidBusinessData } from './excel.js';
 import { addDays as addDateDays, normalizeDateKey } from './date.js';
-import { ACTION_HISTORY_DAYS, ACTION_LOOKBACK_DAYS, actionToSummary, buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, findRecentAction, getEffectiveAction, getSkuActionTimeline, normalizeAction, normalizeSku } from './actions.js';
+import { ACTION_HISTORY_DAYS, ACTION_LOOKBACK_DAYS, actionToSummary, buildActionKey, CPM_RECOMMEND_MIN_BID, CPM_SEARCH_MIN_BID, findRecentAction, getEffectiveAction, getSkuActionTimeline, normalizeAction, normalizePlatform, normalizeSku, buildPlatformSkuKey } from './actions.js';
 
 const METRICS = {
   dealPriceRub: '成交价',
@@ -196,23 +196,24 @@ const buildActionJudgement = (action, windows, nearby = []) => {
   return messages.length ? messages.join(' ') : '暂无明确动作效果，建议继续观察。';
 };
 
-export const buildSkuActionHistory = (records = [], actions = [], sku = '', endDate = '', days = ACTION_HISTORY_DAYS) => {
+export const buildSkuActionHistory = (records = [], actions = [], sku = '', endDate = '', days = ACTION_HISTORY_DAYS, platform = 'WB') => {
+  const targetPlatform = normalizePlatform(platform);
   const recordList = Array.isArray(records) ? records : [];
   const actionList = Array.isArray(actions) ? actions : [];
   const targetDate = normalizeDateKey(endDate || recordList.map((r) => normalizeDateKey(r.date)).filter(Boolean).sort().at(-1) || '');
   const fromDate = targetDate ? addDateDays(targetDate, -(days - 1)) : '';
-  const normalizedRecords = recordList.map((r) => ({ ...r, date: normalizeDateKey(r.date), sku: normalizeSku(r.sku) })).filter((r) => r.date && (!sku || r.sku === normalizeSku(sku))).sort((a, b) => a.date.localeCompare(b.date));
-  const explicit = getSkuActionTimeline(actionList, sku, { fromDate, toDate: targetDate }).map((action) => ({ type: 'explicit', action }));
+  const normalizedRecords = recordList.map((r) => ({ ...r, platform: normalizePlatform(r.platform), date: normalizeDateKey(r.date), sku: normalizeSku(r.sku) })).filter((r) => r.date && r.platform === targetPlatform && (!sku || r.sku === normalizeSku(sku))).sort((a, b) => a.date.localeCompare(b.date));
+  const explicit = getSkuActionTimeline(actionList, sku, { fromDate, toDate: targetDate, platform: targetPlatform }).map((action) => ({ type: 'explicit', action }));
   const explicitDates = new Set(explicit.map((row) => row.action.date));
   const inherited = normalizedRecords
     .filter((record) => record.date >= fromDate && record.date <= targetDate && !explicitDates.has(record.date))
-    .map((record) => ({ type: 'inherited', effective: getEffectiveAction(actionList, record.date, sku), record }))
+    .map((record) => ({ type: 'inherited', effective: getEffectiveAction(actionList, record.date, sku, ACTION_LOOKBACK_DAYS, targetPlatform), record }))
     .filter((row) => row.effective.found && row.effective.isInherited)
     .map((row) => ({ type: 'inherited', action: row.effective.action, sourceActionDate: row.effective.sourceActionDate }));
   return [...explicit, ...inherited].map((entry) => {
     const action = entry.action;
     const windows = buildActionWindows(normalizedRecords, action.date);
-    const nearby = getSkuActionTimeline(actionList, action.sku, { fromDate: addDateDays(action.date, -2), toDate: addDateDays(action.date, 2) });
+    const nearby = getSkuActionTimeline(actionList, action.sku, { fromDate: addDateDays(action.date, -2), toDate: addDateDays(action.date, 2), platform: targetPlatform });
     return { action, date: action.date, sku: action.sku, type: entry.type, sourceActionDate: entry.sourceActionDate || action.sourceActionDate || action.date, summary: entry.type === 'inherited' ? `继承 ${entry.sourceActionDate || action.sourceActionDate}` : actionToSummary(action), windows, judgement: entry.type === 'inherited' ? `自动继承动作：沿用 ${entry.sourceActionDate || action.sourceActionDate}。` : buildActionJudgement(action, windows, nearby) };
   }).sort((a, b) => b.date.localeCompare(a.date));
 };
@@ -386,53 +387,88 @@ const analyzeRules = ({ sku, today, yesterday, metrics, latestAction, previousAc
   return { recommendations, risks, effects };
 };
 
+
+const analyzeGenericOzonRules = ({ sku, today, metrics }) => {
+  const recommendations = [];
+  const risks = [];
+  const effects = [];
+  const roi = metrics.roi.today;
+  const acos = metrics.acos.today;
+  const orderDelta = metrics.totalOrders.todayVsYesterday.rate;
+  const revenueDelta = metrics.revenue.todayVsYesterday.rate;
+  const profitDelta = metrics.profit.todayVsYesterday.value;
+  if (today.adSpend > today.revenue * 0.35 && today.adSpend > 0) {
+    risks.push(`${sku} Ozon 广告费占比过高。`);
+    recommendations.push(makeRecommendation('控制广告花费', `${sku} Ozon 广告费占比 ${pct(today.adSpend / today.revenue)}，建议检查高花费低转化广告、降低预算或暂停低效投放。`, '高'));
+  }
+  if (today.adSpend > 0 && roi > 0 && roi < 1.5) recommendations.push(makeRecommendation('控制广告花费', `${sku} Ozon ROI ${roi.toFixed(2)} 偏低，建议优先降低低转化广告花费。`, '高'));
+  if (acos > 0.35) recommendations.push(makeRecommendation('控制广告花费', `${sku} Ozon ACOS ${pct(acos)} 偏高，建议复查广告关键词、预算与价格转化。`, acos > 0.5 ? '高' : '中'));
+  if (orderDelta < -0.1) recommendations.push(makeRecommendation('观察1天', `${sku} Ozon 订单较昨日下降 ${pct(Math.abs(orderDelta))}，需结合曝光、点击和转化变化排查。`, '中'));
+  if (revenueDelta < -0.1) recommendations.push(makeRecommendation('观察1天', `${sku} Ozon 销售额较昨日下降 ${pct(Math.abs(revenueDelta))}，建议检查价格、库存和流量入口。`, '中'));
+  if (profitDelta < 0) recommendations.push(makeRecommendation('控制广告花费', `${sku} Ozon 利润较昨日下降 ${money(Math.abs(profitDelta))}，建议先控制广告费并排查转化。`, '高'));
+  if (metrics.impressions.today > 0 && metrics.clicks.today === 0) recommendations.push(makeRecommendation('优化主图', `${sku} Ozon 有曝光无点击，建议优化主图、标题和价格。`, '高'));
+  if (metrics.clicks.today > 0 && metrics.totalOrders.today === 0) recommendations.push(makeRecommendation('降价或参加活动', `${sku} Ozon 有点击无订单，建议检查价格、评价和详情页转化。`, '高'));
+  if (!recommendations.length) recommendations.push(makeRecommendation('观察1天', `${sku} Ozon 当前未触发强干预规则，建议继续观察曝光、点击、转化、ROI 与 ACOS。`, '低'));
+  effects.push({ level: '观察', text: `${sku} Ozon 使用通用广告分析规则，未套用 WB CPC/CPM 最低出价规则。` });
+  return { recommendations, risks, effects };
+};
+
 export const buildEffectAnalysis = (records = [], actions = [], filters = {}) => {
   const recordList = Array.isArray(records) ? records : [];
   const actionList = Array.isArray(actions) ? actions : [];
   const normalizedActions = actionList.map((action) => normalizeAction(action)).filter((action) => action.date && action.sku);
   const bySku = new Map();
   const candidateSkus = new Set();
+  const targetPlatform = !filters.platform || filters.platform === 'all' ? 'all' : normalizePlatform(filters.platform);
   recordList.forEach((record) => {
     const recordDate = normalizeDateKey(record.date);
     if (!recordDate || !record.sku) return;
     const recordSku = normalizeSku(record.sku);
+    const recordPlatform = normalizePlatform(record.platform);
+    const candidateKey = buildPlatformSkuKey(recordPlatform, recordSku);
     const filterSku = normalizeSku(filters.sku);
-    if (filterSku && recordSku !== filterSku) return;
-    candidateSkus.add(recordSku);
+    if (targetPlatform !== 'all' && recordPlatform !== targetPlatform) return;
+    if (filters.sku && recordSku !== filterSku && candidateKey !== filters.sku) return;
+    candidateSkus.add(candidateKey);
     if (!hasValidBusinessData(record)) return;
-    if (!bySku.has(recordSku)) bySku.set(recordSku, []);
-    bySku.get(recordSku).push({ ...record, date: recordDate, sku: recordSku });
+    if (!bySku.has(candidateKey)) bySku.set(candidateKey, []);
+    bySku.get(candidateKey).push({ ...record, platform: recordPlatform, date: recordDate, sku: recordSku });
   });
   actionList.forEach((action) => {
     const actionSku = normalizeSku(action.sku);
+    const actionPlatform = normalizePlatform(action.platform);
+    const candidateKey = buildPlatformSkuKey(actionPlatform, actionSku);
     const filterSku = normalizeSku(filters.sku);
-    if (actionSku && (!filterSku || actionSku === filterSku)) candidateSkus.add(actionSku);
+    if (targetPlatform !== 'all' && actionPlatform !== targetPlatform) return;
+    if (actionSku && (!filters.sku || actionSku === filterSku || candidateKey === filters.sku)) candidateSkus.add(candidateKey);
   });
 
-  const analyses = [...candidateSkus].map((sku) => {
-    const sorted = (bySku.get(sku) || []).sort((a, b) => a.date.localeCompare(b.date));
+  const analyses = [...candidateSkus].map((candidateKey) => {
+    const [platform, sku] = candidateKey.split('__');
+    const sorted = (bySku.get(candidateKey) || []).sort((a, b) => a.date.localeCompare(b.date));
     const inRange = sorted.filter((record) => (filters.allDates || !filters.startDate || record.date >= filters.startDate) && (filters.allDates || !filters.endDate || record.date <= filters.endDate));
     const targetDate = filters.endDate || filters.date || inRange.at(-1)?.date || sorted.at(-1)?.date;
     const exactToday = targetDate ? inRange.find((record) => record.date === targetDate) : null;
     const today = exactToday || (!targetDate ? inRange.at(-1) || sorted.at(-1) : null);
     const requiredActionDate = targetDate ? addDateDays(targetDate, -1) : '';
-    const effectiveLookup = targetDate ? getEffectiveAction(normalizedActions, targetDate, sku, ACTION_LOOKBACK_DAYS) : { action: null, found: false, isInherited: false };
-    const recentLookup = targetDate ? findRecentAction(normalizedActions, targetDate, sku, ACTION_LOOKBACK_DAYS) : { action: null, found: false };
+    const effectiveLookup = targetDate ? getEffectiveAction(normalizedActions, targetDate, sku, ACTION_LOOKBACK_DAYS, platform) : { action: null, found: false, isInherited: false };
+    const recentLookup = targetDate ? findRecentAction(normalizedActions, targetDate, sku, ACTION_LOOKBACK_DAYS, platform) : { action: null, found: false };
     const currentDateAction = effectiveLookup.found && !effectiveLookup.isInherited ? effectiveLookup.action : null;
     const latestActionForMissing = effectiveLookup.action || null;
     const missingCurrentData = !today || (targetDate && !exactToday);
     if (missingCurrentData) {
       const recommendation = noDataRecommendation(sku, Boolean(latestActionForMissing));
       return {
+        platform,
         sku,
         date: targetDate || '',
-        uniqueKey: targetDate ? buildActionKey(targetDate, sku) : '',
+        uniqueKey: targetDate ? buildActionKey(targetDate, sku, platform) : '',
         latestAction: latestActionForMissing,
         previousAction: null,
         metrics: buildMetricSnapshot({}, {}, {}, {}, {}, {}),
         actionWindows: latestActionForMissing ? buildActionWindows(sorted, latestActionForMissing.date) : null,
         noValidData: true,
-        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || '', daysSinceAction: effectiveLookup.daysSinceAction, lookbackDays: ACTION_LOOKBACK_DAYS, previousDayHadAction: recentLookup.previousDayHadAction, missingMessage: latestActionForMissing ? (effectiveLookup.isInherited ? `未找到当前日期新动作，已沿用最近动作：${effectiveLookup.sourceActionDate}。` : `当前日期已有保存动作：${latestActionForMissing.date} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`, effectiveActionDate: effectiveLookup.sourceActionDate || latestActionForMissing?.date || '', isTodayNewAction: Boolean(currentDateAction), isInherited: Boolean(effectiveLookup.isInherited), sourceActionDate: effectiveLookup.sourceActionDate || '', sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), lookupKey: buildActionKey(latestActionForMissing?.date || requiredActionDate, sku), noValidData: true },
+        actionMeta: { analysisDate: targetDate || '', comparisonDate: requiredActionDate, requiredActionDate, usedActionDate: latestActionForMissing?.date || '', daysSinceAction: effectiveLookup.daysSinceAction, lookbackDays: ACTION_LOOKBACK_DAYS, previousDayHadAction: recentLookup.previousDayHadAction, missingMessage: latestActionForMissing ? (effectiveLookup.isInherited ? `未找到当前日期新动作，已沿用最近动作：${effectiveLookup.sourceActionDate}。` : `当前日期已有保存动作：${latestActionForMissing.date} / ${sku}。`) : `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`, effectiveActionDate: effectiveLookup.sourceActionDate || latestActionForMissing?.date || '', isTodayNewAction: Boolean(currentDateAction), isInherited: Boolean(effectiveLookup.isInherited), sourceActionDate: effectiveLookup.sourceActionDate || '', sku, source: latestActionForMissing?.source || 'IndexedDB 动作记录', found: Boolean(latestActionForMissing), lookupKey: buildActionKey(latestActionForMissing?.date || requiredActionDate, sku, platform), noValidData: true },
         primaryRecommendation: recommendation,
         recommendations: [recommendation],
         risks: [],
@@ -448,17 +484,18 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
     const actionDate = effectiveLookup.sourceActionDate || latestAction?.date || requiredActionDate;
     const before3Rows = sorted.filter((record) => record.date < actionDate).slice(-3);
     const after3Rows = sorted.filter((record) => record.date > actionDate && record.date <= addDateDays(actionDate, 3));
-    const previousAction = normalizedActions.filter((action) => normalizeSku(action.sku) === sku && normalizeDateKey(action.date) < actionDate).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+    const previousAction = normalizedActions.filter((action) => normalizePlatform(action.platform) === platform && normalizeSku(action.sku) === sku && normalizeDateKey(action.date) < actionDate).sort((a, b) => a.date.localeCompare(b.date)).at(-1);
     const metrics = buildMetricSnapshot(today, yesterday, averageRecords(last3Rows), averageRecords(last7Rows), averageRecords(before3Rows), averageRecords(after3Rows));
     const actionWindows = latestAction ? buildActionWindows(sorted, actionDate) : null;
     if (actionWindows) actionWindows.analysisDate = today.date;
-    const nearbyActions = latestAction ? getSkuActionTimeline(normalizedActions, sku, { fromDate: addDateDays(actionDate, -2), toDate: addDateDays(today.date, 0) }) : [];
+    const nearbyActions = latestAction ? getSkuActionTimeline(normalizedActions, sku, { fromDate: addDateDays(actionDate, -2), toDate: addDateDays(today.date, 0), platform }) : [];
     const specialJudgement = latestAction ? buildActionJudgement(latestAction, actionWindows, nearbyActions) : '';
     const ruleResult = latestAction
-      ? analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) })
+      ? (platform === 'Ozon' ? analyzeGenericOzonRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) }) : analyzeRules({ sku, today: enrichRecord(today), yesterday: enrichRecord(yesterday), metrics, latestAction, previousAction, records: sorted.slice(0, todayIndex + 1) }))
       : { recommendations: [makeRecommendation('观察1天', `最近 ${ACTION_LOOKBACK_DAYS} 天未找到动作记录。`, '低')], risks: [], effects: [] };
     if (specialJudgement && !ruleResult.effects.some((e) => e.text === specialJudgement)) ruleResult.effects.unshift({ level: specialJudgement.includes('有效') || specialJudgement.includes('提升') ? '好' : '观察', text: specialJudgement });
     return {
+      platform,
       sku,
       date: today.date,
       uniqueKey: today.uniqueKey,
@@ -482,7 +519,7 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
         sku,
         source: latestAction?.source || 'IndexedDB 动作记录',
         found: Boolean(latestAction),
-        lookupKey: buildActionKey(actionDate || requiredActionDate, sku),
+        lookupKey: buildActionKey(actionDate || requiredActionDate, sku, platform),
       },
       primaryRecommendation: ruleResult.recommendations[0],
       recommendations: ruleResult.recommendations,
@@ -492,7 +529,7 @@ export const buildEffectAnalysis = (records = [], actions = [], filters = {}) =>
   });
 
   const priorityWeight = { 高: 3, 中: 2, 低: 1 };
-  return analyses.filter(Boolean).sort((a, b) => priorityWeight[b.primaryRecommendation.priority] - priorityWeight[a.primaryRecommendation.priority] || a.sku.localeCompare(b.sku));
+  return analyses.filter(Boolean).sort((a, b) => priorityWeight[b.primaryRecommendation.priority] - priorityWeight[a.primaryRecommendation.priority] || `${a.platform || ''}${a.sku}`.localeCompare(`${b.platform || ''}${b.sku}`));
 };
 
 export const metricLabels = METRICS;

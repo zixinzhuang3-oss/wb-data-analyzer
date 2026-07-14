@@ -1,27 +1,29 @@
-import { buildActionKey, normalizeAction, mergeActionRecords, normalizeSku } from './actions.js';
+import { buildActionKey, normalizeAction, mergeActionRecords, normalizePlatform, normalizeSku } from './actions.js';
 import { normalizeDateKey } from './date.js';
 
 const DB_NAME = 'wb-daily-ops-review';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const RECORD_STORE = 'dailyRecords';
 const ACTION_STORE = 'dailyActions';
 const RECOMMENDATION_STORE = 'recommendationHistory';
 
-const ensureStore = (db, name) => {
-  if (!db.objectStoreNames.contains(name)) {
-    const store = db.createObjectStore(name, { keyPath: 'uniqueKey' });
-    store.createIndex('date', 'date', { unique: false });
-    store.createIndex('sku', 'sku', { unique: false });
-  }
+const ensureStore = (db, name, transaction) => {
+  const store = db.objectStoreNames.contains(name)
+    ? transaction.objectStore(name)
+    : db.createObjectStore(name, { keyPath: 'uniqueKey' });
+  if (!store.indexNames.contains('date')) store.createIndex('date', 'date', { unique: false });
+  if (!store.indexNames.contains('sku')) store.createIndex('sku', 'sku', { unique: false });
+  if (!store.indexNames.contains('platform')) store.createIndex('platform', 'platform', { unique: false });
 };
 
 const openDb = () => new Promise((resolve, reject) => {
   const request = indexedDB.open(DB_NAME, DB_VERSION);
   request.onupgradeneeded = () => {
     const db = request.result;
-    ensureStore(db, RECORD_STORE);
-    ensureStore(db, ACTION_STORE);
-    ensureStore(db, RECOMMENDATION_STORE);
+    const transaction = request.transaction;
+    ensureStore(db, RECORD_STORE, transaction);
+    ensureStore(db, ACTION_STORE, transaction);
+    ensureStore(db, RECOMMENDATION_STORE, transaction);
   };
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error);
@@ -43,13 +45,14 @@ const getAllFromStore = async (storeName) => {
     request.onerror = () => reject(request.error);
   });
   db.close();
-  return rows.sort((a, b) => `${b.date}${b.sku}`.localeCompare(`${a.date}${a.sku}`));
+  return rows.sort((a, b) => `${b.platform || 'WB'}${b.date}${b.sku}`.localeCompare(`${a.platform || 'WB'}${a.date}${a.sku}`));
 };
 
 const normalizeRecord = (record) => {
   const date = normalizeDateKey(record.date);
   const sku = normalizeSku(record.sku);
-  return { ...record, date, sku, uniqueKey: `${date}__${sku}` };
+  const platform = normalizePlatform(record.platform);
+  return { ...record, platform, date, sku, uniqueKey: buildActionKey(date, sku, platform) };
 };
 
 const getFromStore = (store, key) => new Promise((resolve, reject) => {
@@ -81,7 +84,7 @@ export const getAllActions = async () => {
   const rows = (await getAllFromStore(ACTION_STORE)).map(normalizeAction);
   const deduped = new Map();
   rows.forEach((action) => deduped.set(action.uniqueKey, action));
-  return [...deduped.values()].sort((a, b) => `${b.date}${b.sku}`.localeCompare(`${a.date}${a.sku}`));
+  return [...deduped.values()].sort((a, b) => `${b.platform}${b.date}${b.sku}`.localeCompare(`${a.platform}${a.date}${a.sku}`));
 };
 export const getAllRecommendationHistory = () => getAllFromStore(RECOMMENDATION_STORE);
 
@@ -98,11 +101,17 @@ export const deleteAction = async (uniqueKey) => {
   const transaction = db.transaction(ACTION_STORE, 'readwrite');
   const store = transaction.objectStore(ACTION_STORE);
   const separator = String(uniqueKey).includes('__') ? '__' : '_';
-  const [date = '', sku = ''] = String(uniqueKey || '').split(separator);
-  const normalizedKey = buildActionKey(date, sku);
+  const parts = String(uniqueKey || '').split(separator);
+  const [platformMaybe = '', dateMaybe = '', ...skuParts] = parts;
+  const hasPlatform = ['WB', 'Ozon'].includes(platformMaybe);
+  const platform = hasPlatform ? platformMaybe : 'WB';
+  const date = hasPlatform ? dateMaybe : platformMaybe;
+  const sku = hasPlatform ? skuParts.join(separator) : [dateMaybe, ...skuParts].join(separator);
+  const normalizedKey = buildActionKey(date, sku, platform);
   store.delete(uniqueKey);
   store.delete(normalizedKey);
   store.delete(`${normalizeDateKey(date)}__${normalizeSku(sku)}`);
+  store.delete(`${normalizeDateKey(date)}_${normalizeSku(sku)}`);
   await txDone(transaction);
   db.close();
 };
@@ -165,7 +174,7 @@ const normalizeRecommendation = (item) => {
 
 export const exportBackup = async () => ({
   exportedAt: new Date().toISOString(),
-  version: 3,
+  version: 4,
   records: await getAllRecords(),
   actionRecords: await getAllActions(),
   actions: await getAllActions(),

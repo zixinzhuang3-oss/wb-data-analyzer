@@ -1,5 +1,5 @@
 import { DAILY_FIELDS, NUMERIC_FIELD_KEYS, fieldLabels, isSkuSheet } from './fields.js';
-import { parseOperationActionText } from './actions.js';
+import { buildActionKey, normalizePlatform, parseOperationActionText } from './actions.js';
 import { CNY_TO_RUB } from './currency.js';
 import { normalizeDateKey } from './date.js';
 
@@ -149,13 +149,14 @@ export const hasValidBusinessData = (record = {}) => {
 
 export const hasEffectiveDailyData = hasValidBusinessData;
 
-export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
+export const normalizeSheetRow = (sheetName, headers, row, XLSX, platform = 'WB') => {
+  const normalizedPlatform = normalizePlatform(platform);
   const headerMap = buildHeaderMap(headers);
-  const record = { sku: sheetName.trim(), sourceSheet: sheetName.trim() };
+  const record = { platform: normalizedPlatform, sku: sheetName.trim(), sourceSheet: sheetName.trim() };
   record.dealPriceRubRaw = row[FIXED_COLUMNS.dealPriceRub] ?? '';
   const rawBusinessFields = {};
   DAILY_FIELDS.forEach((field) => {
-    if (field.key === 'sku') return;
+    if (field.key === 'sku' || field.key === 'platform') return;
     const value = getFieldValue(field, headerMap, row);
     if (hasRawBusinessCell(field.key, value)) rawBusinessFields[field.key] = true;
     if (field.key === 'date') record.date = toIsoDate(value, XLSX);
@@ -176,7 +177,7 @@ export const normalizeSheetRow = (sheetName, headers, row, XLSX) => {
   record.hasValidBusinessData = Object.keys(rawBusinessFields).length > 0;
   record.__hasValidBusinessData = record.hasValidBusinessData;
   record.adStatus = detectAdStatus(record, headers, row, headerMap);
-  record.uniqueKey = `${record.date}__${record.sku}`;
+  record.uniqueKey = buildActionKey(record.date, record.sku, record.platform);
   return record;
 };
 
@@ -204,8 +205,9 @@ export const buildPriceAutoActions = (records = []) => {
   const bySku = new Map();
   records.forEach((record) => {
     if (!record?.sku || !record?.date) return;
-    if (!bySku.has(record.sku)) bySku.set(record.sku, []);
-    bySku.get(record.sku).push(record);
+    const key = `${normalizePlatform(record.platform)}__${record.sku}`;
+    if (!bySku.has(key)) bySku.set(key, []);
+    bySku.get(key).push(record);
   });
   const actions = [];
   bySku.forEach((rows) => {
@@ -221,7 +223,7 @@ export const buildPriceAutoActions = (records = []) => {
       record.priceActionAuto = detected.priceAction || '';
       record.priceActionSource = detected.priceAction ? 'price_auto' : '';
       record.priceActionMessage = detected.message;
-      if (detected.priceAction) actions.push(parseOperationActionText(`价格动作=${detected.priceAction}`, record.date, record.sku) || null);
+      if (detected.priceAction) actions.push(parseOperationActionText(`价格动作=${detected.priceAction}`, record.date, record.sku, record.platform) || null);
       const last = actions.at(-1);
       if (last && last.date === record.date && last.sku === record.sku) {
         last.source = 'price_auto';
@@ -237,7 +239,12 @@ export const buildPriceAutoActions = (records = []) => {
   return actions.filter(Boolean);
 };
 
-export const parseExcelWorkbook = async (file) => {
+const parseSheetByFixedColumns = (sheetName, headers, row, XLSX, platform) => normalizeSheetRow(sheetName, headers, row, XLSX, platform);
+export const parseWbSheet = parseSheetByFixedColumns;
+export const parseOzonSheet = parseSheetByFixedColumns;
+
+export const parseExcelWorkbook = async (file, platform = 'WB') => {
+  const normalizedPlatform = normalizePlatform(platform);
   const XLSX = await loadSheetJs();
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
@@ -255,10 +262,11 @@ export const parseExcelWorkbook = async (file) => {
     diagnostics.push(buildSheetDiagnostics(sheetName, rows, headerIndex, XLSX));
     const headers = rows[headerIndex];
     rows.slice(headerIndex + 1).filter((row) => !rowIsEmpty(row)).forEach((row) => {
-      const record = normalizeSheetRow(sheetName, headers, row, XLSX);
+      const parser = normalizedPlatform === 'Ozon' ? parseOzonSheet : parseWbSheet;
+      const record = parser(sheetName, headers, row, XLSX, normalizedPlatform);
       if (record.date && hasEffectiveDailyData(record)) {
         records.push(record);
-        const parsedAction = parseOperationActionText(record.operationAction, record.date, record.sku);
+        const parsedAction = parseOperationActionText(record.operationAction, record.date, record.sku, record.platform);
         if (parsedAction) actions.push(parsedAction);
       }
     });
@@ -266,5 +274,5 @@ export const parseExcelWorkbook = async (file) => {
 
   actions.push(...buildPriceAutoActions(records));
 
-  return { records, actions, skuSheets, skippedSheets, fieldLabels, diagnostics };
+  return { platform: normalizedPlatform, records, actions, skuSheets, skippedSheets, fieldLabels, diagnostics };
 };

@@ -6,17 +6,25 @@ export const safeNormalizeDate = (value) => {
 };
 export const normalizeDate = (date) => normalizeDateKey(date);
 export const normalizeSku = (sku) => String(sku || '').trim().toUpperCase();
-export const buildActionKey = (date, sku) => `${normalizeDate(date)}_${normalizeSku(sku)}`;
-export const getActionRecord = (actions = [], date = '', sku = '') => {
+export const buildActionKey = (date = '', sku = '', platform = 'WB') => {
+  const normalizedDate = safeNormalizeDate(date);
+  const normalizedSku = normalizeSku(sku);
+  const normalizedPlatform = normalizePlatform(platform);
+  if (!normalizedDate || !normalizedSku) return '';
+  return `${normalizedPlatform}_${normalizedDate}_${normalizedSku}`;
+};
+export const getActionRecord = (actions = [], date = '', sku = '', platform = 'WB') => {
   const actionList = Array.isArray(actions) ? actions : [];
   const normalizedDate = safeNormalizeDate(date);
   const targetSku = normalizeSku(sku);
+  const targetPlatform = normalizePlatform(platform);
   if (!normalizedDate || !targetSku) return null;
-  const key = buildActionKey(normalizedDate, targetSku);
+  const key = buildActionKey(normalizedDate, targetSku, targetPlatform);
   return actionList.find((action) => {
     const actionDate = safeNormalizeDate(action?.date);
     const actionSku = normalizeSku(action?.sku);
-    return (action?.uniqueKey === key && actionSku === targetSku) || (actionDate === normalizedDate && actionSku === targetSku);
+    const actionPlatform = normalizePlatform(action?.platform);
+    return actionPlatform === targetPlatform && ((action?.uniqueKey === key && actionSku === targetSku) || (actionDate === normalizedDate && actionSku === targetSku));
   }) || null;
 };
 
@@ -24,8 +32,9 @@ export const ACTION_INHERIT_LOOKBACK_DAYS = 30;
 export const ACTION_LOOKBACK_DAYS = ACTION_INHERIT_LOOKBACK_DAYS;
 export const ACTION_HISTORY_DAYS = 30;
 
-export const getSkuActionTimeline = (actions = [], sku = '', { beforeDate = '', fromDate = '', toDate = '' } = {}) => {
+export const getSkuActionTimeline = (actions = [], sku = '', { beforeDate = '', fromDate = '', toDate = '', platform = 'WB' } = {}) => {
   const targetSku = normalizeSku(sku);
+  const targetPlatform = normalizePlatform(platform);
   const actionList = Array.isArray(actions) ? actions : [];
   const safeBeforeDate = safeNormalizeDate(beforeDate);
   const safeFromDate = safeNormalizeDate(fromDate);
@@ -33,21 +42,21 @@ export const getSkuActionTimeline = (actions = [], sku = '', { beforeDate = '', 
   return actionList
     .map((action) => normalizeAction(action))
     .filter((action) => action.date)
-    .filter((action) => action.sku && (!targetSku || action.sku === targetSku))
+    .filter((action) => action.sku && (!targetSku || action.sku === targetSku) && action.platform === targetPlatform)
     .filter((action) => !safeBeforeDate || action.date < safeBeforeDate)
     .filter((action) => !safeFromDate || action.date >= safeFromDate)
     .filter((action) => !safeToDate || action.date <= safeToDate)
     .sort((a, b) => a.date.localeCompare(b.date));
 };
 
-export const findRecentAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_LOOKBACK_DAYS) => {
+export const findRecentAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_LOOKBACK_DAYS, platform = 'WB') => {
   const analysisDate = safeNormalizeDate(date);
   const targetSku = normalizeSku(sku);
   const safeDays = Number.isFinite(Number(lookbackDays)) && Number(lookbackDays) > 0 ? Number(lookbackDays) : ACTION_LOOKBACK_DAYS;
   if (!analysisDate || !targetSku) {
     return { action: null, timeline: [], found: false, lookbackDays: safeDays, analysisDate: analysisDate || null, daysSinceAction: null, previousDayHadAction: false, sourceActionDate: null, isInherited: false };
   }
-  const timeline = getSkuActionTimeline(actions, targetSku, { beforeDate: analysisDate });
+  const timeline = getSkuActionTimeline(actions, targetSku, { beforeDate: analysisDate, platform });
   const earliest = addDays(analysisDate, -safeDays);
   const recent = timeline.filter((action) => action.date && (!earliest || action.date >= earliest)).at(-1) || null;
   return {
@@ -57,7 +66,7 @@ export const findRecentAction = (actions = [], date = '', sku = '', lookbackDays
     lookbackDays: safeDays,
     analysisDate,
     daysSinceAction: recent ? Math.max(0, timelineDateDiffDays(recent.date, analysisDate)) : null,
-    previousDayHadAction: Boolean(getActionRecord(actions, addDays(analysisDate, -1), targetSku)),
+    previousDayHadAction: Boolean(getActionRecord(actions, addDays(analysisDate, -1), targetSku, platform)),
     sourceActionDate: recent?.date || null,
     isInherited: Boolean(recent),
   };
@@ -73,13 +82,14 @@ const timelineDateDiffDays = (fromDate, toDate) => {
   return Math.round((new Date(ty, tm - 1, td) - new Date(fy, fm - 1, fd)) / 86400000);
 };
 
-export const getEffectiveAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_INHERIT_LOOKBACK_DAYS) => {
+export const getEffectiveAction = (actions = [], date = '', sku = '', lookbackDays = ACTION_INHERIT_LOOKBACK_DAYS, platform = 'WB') => {
   const analysisDate = safeNormalizeDate(date);
   const targetSku = normalizeSku(sku);
+  const targetPlatform = normalizePlatform(platform);
   if (!analysisDate || !targetSku) {
     return { action: null, explicitAction: null, found: false, isInherited: false, sourceActionDate: null, effectiveFromDate: null, daysSinceAction: null, lookbackDays, message: '未找到历史动作。' };
   }
-  const explicit = getActionRecord(actions, analysisDate, targetSku);
+  const explicit = getActionRecord(actions, analysisDate, targetSku, targetPlatform);
   if (explicit) {
     const action = normalizeAction(explicit);
     return {
@@ -94,7 +104,7 @@ export const getEffectiveAction = (actions = [], date = '', sku = '', lookbackDa
       message: '当前日期已有保存动作。',
     };
   }
-  const recent = findRecentAction(actions, analysisDate, targetSku, lookbackDays);
+  const recent = findRecentAction(actions, analysisDate, targetSku, lookbackDays, targetPlatform);
   if (!recent.action) {
     return {
       action: null,
@@ -110,7 +120,7 @@ export const getEffectiveAction = (actions = [], date = '', sku = '', lookbackDa
   }
   const inherited = normalizeAction(recent.action);
   return {
-    action: { ...inherited, date: analysisDate, uniqueKey: buildActionKey(analysisDate, targetSku), effectiveFromDate: inherited.date, sourceActionDate: inherited.date, originalActionDate: inherited.date, isInherited: true },
+    action: { ...inherited, date: analysisDate, uniqueKey: buildActionKey(analysisDate, targetSku, targetPlatform), effectiveFromDate: inherited.date, sourceActionDate: inherited.date, originalActionDate: inherited.date, isInherited: true },
     explicitAction: null,
     found: true,
     isInherited: true,
@@ -177,8 +187,12 @@ export const ACTION_FIELDS = [
   { key: 'rawOperationAction', label: '运营动作原文', type: 'textarea', group: '基础字段' },
 ];
 
-export const createEmptyAction = (date = '', sku = '') => ({
-  date, sku, adStatus: '无广告', cpcEnabled: '关闭', cpcSearchBid: '', cpcDailyBudget: '', cpcNote: '',
+export const normalizePlatform = (platform = 'WB') => String(platform || 'WB').trim().toLowerCase() === 'ozon' ? 'Ozon' : 'WB';
+export const buildPlatformSkuKey = (platform = 'WB', sku = '') => `${normalizePlatform(platform)}__${normalizeSku(sku)}`;
+export const buildPlatformSkuLabel = (platform = 'WB', sku = '') => `${normalizePlatform(platform)} ${normalizeSku(sku)}`;
+
+export const createEmptyAction = (date = '', sku = '', platform = 'WB') => ({
+  platform: normalizePlatform(platform), date, sku, adStatus: '无广告', cpcEnabled: '关闭', cpcSearchBid: '', cpcDailyBudget: '', cpcNote: '',
   cpmEnabled: '关闭', cpmPosition: '', cpmBidType: '', cpmSearchBid: '', cpmRecommendBid: '', cpmUnifiedBid: '', cpmDailyBudget: '', cpmNote: '',
   budgetAction: '', priceAction: '', imageAction: '', keywordAction: '', stockAction: '', source: 'manual', rawOperationAction: '', note: '',
   adMode: '无广告', adPosition: '', dailyBudget: '',
@@ -292,9 +306,10 @@ export const normalizeAction = (action) => {
   const date = normalizeDateKey(aliased.date);
   const sku = normalizeSku(aliased.sku);
   const sourceAlias = { 'Excel 自动识别': 'excel_auto', '价格自动识别': 'price_auto', 手动填写: 'manual', 手动修改: 'manual_modified', 继承后保存: 'inherited_saved', 'JSON 导入': 'json_import' };
-  const normalized = { ...createEmptyAction(), ...aliased, date, sku, source: sourceAlias[aliased.source] || aliased.source || 'manual' };
+  const platform = normalizePlatform(aliased.platform);
+  const normalized = { ...createEmptyAction('', '', platform), ...aliased, platform, date, sku, source: sourceAlias[aliased.source] || aliased.source || 'manual' };
   numberFields.forEach((field) => { if (field in normalized) normalized[field] = toNumberOrEmpty(normalized[field]); });
-  return { ...applyAdRules(normalized), uniqueKey: buildActionKey(date, sku), updatedAt: normalized.updatedAt || new Date().toISOString() };
+  return { ...applyAdRules(normalized), uniqueKey: buildActionKey(date, sku, platform), updatedAt: normalized.updatedAt || new Date().toISOString() };
 };
 
 export const shouldReplaceAction = (incoming = {}, existing = {}) => {
@@ -332,10 +347,10 @@ const keyMap = new Map([
   ['预算动作', 'budgetAction'], ['价格动作', 'priceAction'], ['主图动作', 'imageAction'], ['关键词动作', 'keywordAction'], ['库存动作', 'stockAction'], ['备注', 'note'], ['总备注', 'note'],
 ]);
 
-export const parseOperationActionText = (text, date = '', sku = '') => {
+export const parseOperationActionText = (text, date = '', sku = '', platform = 'WB') => {
   const raw = String(text || '').trim();
   if (!raw || !raw.includes('=')) return null;
-  const parsed = { date, sku };
+  const parsed = { date, sku, platform: normalizePlatform(platform) };
   let matched = 0;
   let unknown = 0;
   raw.split(/[；;]/).map((part) => part.trim()).filter(Boolean).forEach((part) => {
